@@ -1,0 +1,280 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* -------------------------------------------------------------------------- */
+/*  设计令牌：与 tailwind.config.js 保持一致，供原生 CSS / 第三方组件覆写使用      */
+/* -------------------------------------------------------------------------- */
+:root {
+  --brand-50: #f0f7f9;
+  --brand-100: #d9ecf2;
+  --brand-200: #a8d5e3;
+  --brand-300: #6fb7cc;
+  --brand-400: #3d97b5;
+  --brand-500: #1f4e5f;
+  --brand-600: #1a3f4f;
+  --brand-700: #15313e;
+  --brand-800: #10242e;
+  --brand-900: #0b181f;
+
+  --ink-900: #1f2937;
+  --ink-700: #374151;
+  --ink-500: #6b7280;
+  --ink-300: #d1d5db;
+
+  --paper: #f7f6f3;
+  --paper-card: #ffffff;
+
+  --status-active: #2563eb;
+  --status-paused: #d97706;
+  --status-done: #059669;
+  --status-abandoned: #dc2626;
+
+  --border-soft: rgba(16, 36, 46, 0.08);
+  --border-strong: rgba(16, 36, 46, 0.14);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-soft);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-paper text-ink-900 antialiased;
+    font-feature-settings: 'tnum' on, 'lnum' on;
+  }
+
+  ::selection {
+    background: var(--brand-200);
+    color: var(--brand-900);
+  }
+
+  /* 细滚动条，深青蓝低饱和 */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(31, 78, 95, 0.18);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(31, 78, 95, 0.32);
+    background-clip: content-box;
+  }
+
+  /* 统一输入框焦点环 */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(61, 151, 181, 0.18);
+  }
+
+  /* 去掉 number input 的上下箭头 */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+@layer components {
+  /* 卡片基础类 */
+  .wb-card {
+    @apply rounded-card border border-[var(--border-soft)] bg-paper-card shadow-card;
+  }
+
+  /* 侧边栏导航项 */
+  .wb-nav-item {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-ink-700 transition-colors;
+  }
+  .wb-nav-item:hover {
+    @apply bg-brand-50 text-brand-700;
+  }
+  .wb-nav-item[data-active='true'] {
+    @apply bg-brand-500 font-medium text-white;
+  }
+
+  /* 轻量标签 */
+  .wb-tag {
+    @apply inline-flex items-center gap-1 rounded-md bg-brand-50 px-1.5 py-0.5 text-[11px] text-brand-600;
+  }
+
+  /* Markdown 正文排版（不引入 typography 插件，保持克制） */
+  .md-body {
+    @apply text-[13.5px] leading-7 text-ink-700;
+  }
+  .md-body > * + * {
+    @apply mt-3;
+  }
+  .md-body h1 {
+    @apply mt-5 text-lg font-semibold text-ink-900;
+  }
+  .md-body h2 {
+    @apply mt-5 text-base font-semibold text-ink-900;
+  }
+  .md-body h3 {
+    @apply mt-4 text-sm font-semibold text-ink-900;
+  }
+  .md-body p {
+    @apply leading-7;
+  }
+  .md-body ul {
+    @apply list-disc pl-5;
+  }
+  .md-body ol {
+    @apply list-decimal pl-5;
+  }
+  .md-body li + li {
+    @apply mt-1;
+  }
+  .md-body a {
+    @apply text-brand-400 underline decoration-brand-200 underline-offset-2 hover:text-brand-500;
+  }
+  .md-body blockquote {
+    @apply border-l-2 border-brand-200 bg-brand-50/60 px-3 py-1.5 text-ink-500;
+  }
+  .md-body code {
+    @apply rounded bg-brand-50 px-1 py-0.5 font-mono text-[12.5px] text-brand-600;
+  }
+  .md-body pre {
+    @apply overflow-x-auto rounded-lg bg-brand-900 p-3 text-[12.5px] leading-6 text-brand-100;
+  }
+  .md-body pre code {
+    @apply bg-transparent p-0 text-brand-100;
+  }
+  .md-body table {
+    @apply w-full border-collapse text-[13px];
+  }
+  .md-body th,
+  .md-body td {
+    @apply border border-[var(--border-soft)] px-2 py-1.5 text-left;
+  }
+  .md-body th {
+    @apply bg-brand-50 font-medium text-brand-700;
+  }
+  .md-body hr {
+    @apply my-4 border-[var(--border-soft)];
+  }
+  .md-body img {
+    @apply rounded-lg;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  @uiw/react-md-editor 主题覆写（强制浅色 + 品牌色）                            */
+/* -------------------------------------------------------------------------- */
+.w-md-editor {
+  --color-canvas-default: #ffffff;
+  --color-canvas-subtle: #f0f7f9;
+  --color-border-default: rgba(16, 36, 46, 0.12);
+  --color-fg-default: #1f2937;
+  --color-fg-muted: #6b7280;
+  --color-accent-fg: #1f4e5f;
+  --color-accent-emphasis: #1f4e5f;
+  box-shadow: none !important;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #ffffff !important;
+}
+.w-md-editor .w-md-editor-toolbar {
+  background: #f7f6f3 !important;
+  border-bottom: 1px solid rgba(16, 36, 46, 0.08) !important;
+}
+.w-md-editor .w-md-editor-toolbar li > button {
+  color: #374151 !important;
+}
+.w-md-editor .w-md-editor-toolbar li > button:hover {
+  color: #1f4e5f !important;
+  background: #d9ecf2 !important;
+}
+.w-md-editor .w-md-editor-text-pre > code,
+.w-md-editor .w-md-editor-text-input {
+  font-family: 'JetBrains Mono', Consolas, monospace !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+}
+.wmde-markdown {
+  background: transparent !important;
+  color: #374151 !important;
+  font-family: inherit !important;
+}
+.wmde-markdown pre {
+  background: #0b181f !important;
+}
+
+/* 代码高亮（Prism token）低饱和配色 */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #6b7280;
+}
+.token.punctuation {
+  color: #a8d5e3;
+}
+.token.property,
+.token.tag,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: #6fb7cc;
+}
+.token.boolean,
+.token.number {
+  color: #d9ecf2;
+}
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: #a8d5e3;
+}
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: #3d97b5;
+}
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #6fb7cc;
+}
+.token.function,
+.token.class-name {
+  color: #d9ecf2;
+}
+.token.regex,
+.token.important,
+.token.variable {
+  color: #f0f7f9;
+}
+
+/* 打字光标 */
+.typing-cursor::after {
+  content: '▍';
+  animation: blink 1.1s ease-in-out infinite;
+  color: var(--brand-400);
+}
+
+/* 打印/导出时隐藏交互元素 */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}

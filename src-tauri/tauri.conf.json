@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "本地个人工作台",
+  "version": "0.1.0",
+  "identifier": "com.local.workbench",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build:desktop",
+    "frontendDist": "./frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "本地个人工作台",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1080,
+        "minHeight": 720,
+        "resizable": true,
+        "maximizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": true,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' http://127.0.0.1:34115 http://localhost:3000; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:34115 http://localhost:3000; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:34115 http://127.0.0.1:1234 http://localhost:1234 ws://127.0.0.1:34115 ws://localhost:3000; frame-ancestors 'none'",
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/node.exe": "node.exe",
+      "resources/server": "server"
+    },
+    "copyright": "本地个人工作台 · 数据全部本机存储",
+    "category": "Productivity",
+    "shortDescription": "本地个人工作台",
+    "longDescription": "灵感素材库 / 待办 / 复盘 / 提示词模板 + 内嵌本地 LM Studio Agent。所有数据存储在本机 SQLite，不联网、不上云。",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {}
+}

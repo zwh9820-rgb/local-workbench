@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+.next*/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# 本地数据库（务必不要提交）
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 环境变量
+.env
+.env.local
+.env*.local
+
+# 素材目录（本地大文件）
+public/assets/ai-material/*
+
+# 备份包
+backups/
+*.zip
+
+# 系统
+.DS_Store
+Thumbs.db
+*.log
+
+# tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/resources/
+src-tauri/*.bak-*

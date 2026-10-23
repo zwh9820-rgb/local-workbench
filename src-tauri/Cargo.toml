@@ -1,0 +1,35 @@
+[package]
+name = "local-workbench"
+version = "0.1.0"
+description = "本地个人工作台 · Tauri 桌面壳"
+authors = ["local-workbench"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# 打包出来的 exe 名称（最终为 本地个人工作台.exe，由 productName 决定）
+[lib]
+name = "local_workbench_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 核心：不开 tray / 全局快捷键等多余 feature，减小体积
+tauri = { version = "2", features = [] }
+# 系统文件对话框（导入 / 导出备份）
+tauri-plugin-dialog = "2"
+# 用系统默认程序打开链接、在资源管理器里定位目录
+tauri-plugin-opener = "2"
+# fs 插件：仅用于把权限沙箱显式收敛到 App 数据目录（见 capabilities/default.json）
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 发布版体积优化（可选，首次编译会慢一些）
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

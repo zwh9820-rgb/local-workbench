@@ -1,0 +1,33 @@
+# 统一换行符，避免 Windows 本地开发与 CI 之间产生无意义的 diff
+* text=auto eol=lf
+
+# 脚本类保持 LF（Node/GitHub Actions 都按 LF 执行）
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+
+# Windows 批处理必须是 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制文件不做换行转换
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.zip  binary
+*.node binary
+*.db   binary
+
+# 让 GitHub 语言统计更准确（把 Next.js 项目标成 TypeScript）
+*.tsx  linguist-language=TypeScript
+*.ts   linguist-language=TypeScript

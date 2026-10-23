@@ -1,0 +1,88 @@
+name: Build Windows EXE
+
+# 触发方式：
+#   1) 手动点 Run workflow
+#   2) push 到 main（只构建 + 上传 artifact，不发布 Release）
+#   3) push tag v*（构建 + 创建 Draft Release 并上传安装包）
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Tauri build (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust (stable, msvc)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      # beforeBuildCommand 会自动执行 npm run build:desktop：
+      # next build(standalone) → 复制 static/public → 复制到 src-tauri/resources
+      # → 复制当前 node.exe 作为 sidecar 运行时
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # tag 推送时才创建 Release；其余情况留空 = 只构建
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('本地个人工作台 {0}', github.ref_name) || '' }}
+          releaseBody: |
+            本地个人工作台（Windows x64）安装包。
+
+            **安装前请先准备**
+            - LM Studio（外部独立程序，不随本安装包提供）：https://lmstudio.ai
+              加载 DeepSeek 系列模型 → Developer 页 Start Server（127.0.0.1:1234）
+            - WebView2 运行时（Windows 11 自带；Windows 10 需安装）
+
+            **数据位置**
+            `%APPDATA%\com.local.workbench`（数据库 / 素材 / 备份），卸载不会删除。
+
+            详见仓库内 `TAURI.md`。
+          releaseDraft: true
+          prerelease: false
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: '[platform]-[arch]-[bundle]-[version]'
+          args: ''
+
+      - name: Show bundle files
+        if: always()
+        shell: pwsh
+        run: |
+          $path = 'src-tauri/target/release/bundle'
+          if (Test-Path $path) {
+            Get-ChildItem -Recurse $path -File | Select-Object FullName, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
+          } else {
+            Write-Host "未找到 bundle 目录（构建可能失败）"
+          }
