@@ -174,9 +174,9 @@ src-tauri/target/release/本地个人工作台.exe      # 未打包的可执行�
 - **推荐**：用 `_x64-setup.exe` 安装包分发，双击即装，桌面/开始菜单生成快捷方式，
   卸载在「设置 → 应用」里。这是 Windows 桌面程序的常规形态。
 - **纯单文件**（一个 exe 拷走就能跑）在当前架构下做不到：exe 旁边必须带
-  `node.exe` + `server/` 目录，因为后端是 Node 服务。
+  `node.exe` + `server.zip`，因为后端是 Node 服务。
   如果确实需要单文件，只有一条路：把后端整体改写成 Rust（违反「不重写业务」的约束）。
-- 折中方案：把 `target/release/` 下的 exe + resources 打成绿色压缩包分发，
+- 折中方案：把 `target/release/` 下的 exe、`node.exe`、`server.zip` 一起打成绿色压缩包分发，
   解压即用，数据仍在 `%APPDATA%`。
 
 ---
@@ -191,10 +191,30 @@ src-tauri/target/release/本地个人工作台.exe      # 未打包的可执行�
 ├─ ai-material\          # Agent 唯一可读的素材目录
 │  ├─ README.md          # 首次启动自动生成
 │  └─ workflows\
-└─ backups\              # 导出备份默认落盘位置 + 导入中转
+├─ backups\              # 导出备份默认落盘位置 + 导入中转
+├─ logs\
+│  └─ server.log         # 内置服务的 stdout/stderr（排障必看）
+└─ runtime\
+   └─ 0.1.0\             # 首次启动从 server.zip 解压出的服务端
+      ├─ server.js
+      ├─ .next\
+      └─ node_modules\
 ```
 
-顶栏「文件夹」图标可以直接在资源管理器里打开这个目录。
+安装目录（`%LOCALAPPDATA%\Programs\本地个人工作台\`）只有三个文件：
+
+```
+本地个人工作台.exe
+node.exe        # 内置 Node 运行时（构建时从 CI 的 Node 复制，ABI 与 better-sqlite3 匹配）
+server.zip      # Next standalone 产物，首次启动解压到 runtime\<版本>\
+```
+
+> 为什么要解压而不是直接跑安装目录？
+> Tauri 打包 resources 时按 glob 展开，`.next` 这类点开头的目录有被漏掉的风险；
+> 上万个散文件也会拖慢 NSIS。单文件 zip 最稳，解压后启动不再有额外开销。
+> 升级版本时 `runtime\<新版本>\` 会自动重建，旧目录可手动删除。
+
+顶栏「文件夹」图标可以直接在资源管理器里打开数据目录。
 
 ### 5.2 沙箱权限（`src-tauri/capabilities/default.json`）
 
@@ -293,13 +313,41 @@ WebView2 默认的 `Ctrl+R` / `F5` 刷新会被我们的 keydown 拦截。
 **Q：`tauri dev` 报 `failed to get cargo metadata`**
 A：Rust 没装或没进 PATH。新开一个终端再试；Windows 还要确认 MSVC 已装。
 
-**Q：窗口白屏**
-A：开发态看终端里 Next 是否起来（3000 端口）；打包版看是否提示「启动失败」——
-通常是 `resources/server/server.js` 缺失，重跑 `npm run build:desktop`。
+**Q：窗口白屏 / 提示「内置服务启动失败」**
+A：先看日志：`%APPDATA%\com.local.workbench\logs\server.log`，
+错误页上也会直接显示末尾 60 行。最常见的原因见下面「启动失败排查」。
 
 **Q：提示端口 34115 被占用**
-A：改 `src-tauri/src/lib.rs` 里的 `SERVER_PORT`，同时更新
-`capabilities/default.json` 的 `remote.urls` 和 `tauri.conf.json` 的 CSP。
+A：多半是上次崩溃残留的 `node.exe`。任务管理器结束所有 node.exe 再重开；
+确认占用者：`netstat -ano | findstr :34115`。
+要永久改端口，需同步改三处：`src-tauri/src/lib.rs` 的 `SERVER_PORT`、
+`capabilities/default.json` 的 `remote.urls`、`tauri.conf.json` 的 CSP。
+
+### 启动失败排查（内置服务起不来）
+
+1. **看日志**：`%APPDATA%\com.local.workbench\logs\server.log`
+2. **手动复现**（能看到完整报错，最直接）：
+
+   ```powershell
+   cd "$env:APPDATA\com.local.workbench\runtime\0.1.0"
+   & "$env:LOCALAPPDATA\Programs\本地个人工作台\node.exe" .\server.js
+   ```
+
+   正常情况下会打印 `▲ Next.js ... Ready in xxx ms`。
+
+3. **按报错对症**：
+
+| 日志里的关键词 | 原因 | 处理 |
+| --- | --- | --- |
+| `Could not find a production build in the '.next' directory` | 安装包里 `server.zip` 不完整 | 重新安装；本地构建则重跑 `npm run build:desktop` |
+| `Cannot find module 'better-sqlite3'` / `was compiled against a different Node.js version` | 原生模块缺失或 ABI 不匹配 | 重跑 `npm run build:desktop`（脚本会自动补拷整包），确保打包用的 Node 与 `node.exe` 是同一个 |
+| `SQLITE_CANTOPEN` / `unable to open database file` | 数据目录不可写 | 检查 `%APPDATA%\com.local.workbench` 权限；OneDrive 同步盘容易出这问题 |
+| 日志为空、进程立刻退出 | 杀毒软件拦截 `node.exe` | 把安装目录加入白名单（Defender 的「排除项」） |
+| `EADDRINUSE` | 端口被占 | 见上一条 |
+| 等待超时但日志正常输出到 `Ready` | 端口探测失败（少见） | 确认没有防火墙拦截本机回环 |
+
+4. **彻底重来**：关闭应用 → 删除 `%APPDATA%\com.local.workbench\runtime`（不影响数据库和素材）→ 重开。
+
 
 **Q：杀毒软件报毒**
 A：未签名 exe 的常见误报。选项：加入白名单；或购买代码签名证书后在

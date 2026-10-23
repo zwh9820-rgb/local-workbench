@@ -42,7 +42,7 @@
     ],
     "resources": {
       "resources/node.exe": "node.exe",
-      "resources/server": "server"
+      "resources/server.zip": "server.zip"
     },
     "copyright": "本地个人工作台 · 数据全部本机存储",
     "category": "Productivity",

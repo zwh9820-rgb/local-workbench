@@ -36,6 +36,8 @@ export type AppInfo = {
   dbFile: string;
   materialDir: string;
   backupDir: string;
+  /** 内置服务日志：%APPDATA%\com.local.workbench\logs\server.log */
+  logFile: string;
   serverUrl: string;
   isDev: boolean;
 };

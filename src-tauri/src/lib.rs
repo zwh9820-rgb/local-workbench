@@ -1,4 +1,3 @@
-// 发布版不弹出控制台窗口（main.rs 已声明，这里保持 lib 侧干净）
 //! # 本地个人工作台 · Tauri 桌面壳
 //!
 //! ## 架构（重要）
@@ -25,9 +24,14 @@
 //!
 //! Rust 只做四件事：起服务、给数据目录、弹系统对话框、管生命周期。
 //! 业务逻辑一行没搬。
+//!
+//! ## 排障
+//!
+//! sidecar 的 stdout/stderr 会写到 `%APPDATA%\com.local.workbench\logs\server.log`。
+//! 启动失败时错误页会直接显示日志尾部，不用再猜。
 
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -46,8 +50,20 @@ const SERVER_PORT: u16 = 34115;
 /// 开发态由 Next dev server 提供页面
 const DEV_URL: &str = "http://localhost:3000";
 
-/// 启动超时：首次解压 + SQLite 建表，给足 40 秒
-const START_TIMEOUT: Duration = Duration::from_secs(40);
+/// 启动超时。
+/// 首次启动时 Windows Defender 会全量扫描 node.exe 与 server 目录（上万个文件），
+/// 冷启动 60s+ 是正常现象，所以给到 90 秒。
+const START_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 日志轮转阈值
+const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 内置服务端压缩包名（打包进 resources）
+///
+/// 为什么用 zip 而不是直接放目录？
+/// Tauri 打包 resources 时按 glob 展开，`.next` 这类点开头的目录有被漏掉的风险；
+/// 上万个散文件也会拖慢 NSIS 打包。压成单文件最稳，运行时首次解压即可。
+const SERVER_ZIP: &str = "server.zip";
 
 /// 子进程句柄，退出时负责回收
 struct ServerProcess(Mutex<Option<Child>>);
@@ -65,6 +81,7 @@ struct AppInfo {
     db_file: String,
     material_dir: String,
     backup_dir: String,
+    log_file: String,
     server_url: String,
     is_dev: bool,
 }
@@ -84,10 +101,17 @@ fn backup_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("backups"))
 }
 
-/// 首次启动时把三件套目录建好，避免服务端写入失败
+/// sidecar 日志文件：%APPDATA%\com.local.workbench\logs\server.log
+fn log_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = data_dir(app)?.join("logs");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败 {}: {e}", dir.display()))?;
+    Ok(dir.join("server.log"))
+}
+
+/// 首次启动时把目录建好，避免服务端写入失败
 fn ensure_dirs(app: &AppHandle) -> Result<PathBuf, String> {
     let root = data_dir(app)?;
-    for sub in ["", "ai-material", "backups"] {
+    for sub in ["", "ai-material", "backups", "logs"] {
         let dir = if sub.is_empty() {
             root.clone()
         } else {
@@ -102,13 +126,72 @@ fn ensure_dirs(app: &AppHandle) -> Result<PathBuf, String> {
 /*  服务端进程                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/// 端口是否已可连接
+fn port_in_use(port: u16) -> bool {
+    let addr = match format!("127.0.0.1:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
+}
+
+/// 运行时目录：%APPDATA%\com.local.workbench\runtime\<版本>
+/// 用版本号做子目录，升级后自动重新解压，避免新旧文件混用
+fn runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?
+        .join("runtime")
+        .join(env!("CARGO_PKG_VERSION")))
+}
+
+/// 确保服务端运行时已解压，返回可用目录
+fn ensure_runtime(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = runtime_dir(app)?;
+    let marker = dir.join(".ready");
+
+    if marker.exists() && dir.join("server.js").exists() {
+        return Ok(dir);
+    }
+
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("无法定位资源目录: {e}"))?;
+    let zip_path = resource_dir.join(SERVER_ZIP);
+
+    if !zip_path.exists() {
+        return Err(format!(
+            "找不到内置服务包：{}\n安装包可能不完整，请重新安装；\n若是本地构建，请先执行 npm run build:desktop",
+            zip_path.display()
+        ));
+    }
+
+    // 残留的半成品目录先清掉
+    if dir.exists() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("创建运行时目录失败 {}: {e}", dir.display()))?;
+
+    let file = fs::File::open(&zip_path)
+        .map_err(|e| format!("打开服务包失败 {}: {e}", zip_path.display()))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("服务包损坏（不是合法 zip）: {e}"))?;
+    archive
+        .extract(&dir)
+        .map_err(|e| format!("解压服务包失败: {e}"))?;
+
+    fs::write(&marker, b"ok").map_err(|e| format!("写入标记失败: {e}"))?;
+    Ok(dir)
+}
+
 /// 拉起内置 Node 服务端
 ///
 /// 二进制布局（打包后）：
 ///   <安装目录>\本地个人工作台.exe
-///   <安装目录>\node.exe            ← 由 scripts/prepare-sidecar.mjs 从本机 Node 复制
-///   <安装目录>\server\server.js    ← Next standalone 产物入口
-fn spawn_server(app: &AppHandle, root: &Path) -> Result<Child, String> {
+///   <安装目录>\node.exe        ← 由 scripts/prepare-sidecar.mjs 从构建机 Node 复制
+///   <安装目录>\server.zip      ← Next standalone 产物（首次启动解压到 App 数据目录）
+/// 运行时（首次启动后）：
+///   %APPDATA%\com.local.workbench\runtime\<版本>\server.js
+fn spawn_server(app: &AppHandle, runtime: &Path, root: &Path) -> Result<Child, String> {
     let resource_dir = app
         .path()
         .resource_dir()
@@ -119,13 +202,15 @@ fn spawn_server(app: &AppHandle, root: &Path) -> Result<Child, String> {
     } else {
         resource_dir.join("node")
     };
-    let server_dir = resource_dir.join("server");
+    // 服务端跑在 App 数据目录里（首次启动从 server.zip 解压出来）
+    let server_dir = runtime.to_path_buf();
     let server_js = server_dir.join("server.js");
 
     if !server_js.exists() {
         return Err(format!(
-            "找不到服务端入口：{}\n请先执行 npm run build:desktop 生成 standalone 产物",
-            server_js.display()
+            "找不到服务端入口：{}\n请删除 {} 后重启应用以重新解压",
+            server_js.display(),
+            runtime.display()
         ));
     }
     if !node_bin.exists() {
@@ -134,6 +219,33 @@ fn spawn_server(app: &AppHandle, root: &Path) -> Result<Child, String> {
             node_bin.display()
         ));
     }
+
+    // 日志：追加写入，超过阈值就清空重来
+    let log_path = log_file(app)?;
+    if let Ok(meta) = fs::metadata(&log_path) {
+        if meta.len() > LOG_MAX_BYTES {
+            let _ = fs::remove_file(&log_path);
+        }
+    }
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("无法写入日志文件 {}: {e}", log_path.display()))?;
+    // 每次启动打一条分隔，方便定位是哪一次
+    use std::io::Write;
+    let _ = writeln!(
+        log,
+        "\n===== [{}] 启动 sidecar =====\nnode : {}\nentry: {}\ndata : {}",
+        chrono_like_now(),
+        node_bin.display(),
+        server_js.display(),
+        root.display()
+    );
+
+    let log_err = log
+        .try_clone()
+        .map_err(|e| format!("日志句柄复制失败: {e}"))?;
 
     let mut cmd = Command::new(&node_bin);
     cmd.arg(&server_js)
@@ -145,9 +257,11 @@ fn spawn_server(app: &AppHandle, root: &Path) -> Result<Child, String> {
         .env("WORKBENCH_DATA_DIR", root)
         // LM Studio 仍然是外部程序，这里只是把地址固化下来
         .env("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
+        // 让 Node 的错误堆栈更完整，便于排障
+        .env("NODE_OPTIONS", "--enable-source-maps")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
 
     // Windows 下隐藏黑框控制台
     #[cfg(windows)]
@@ -157,25 +271,60 @@ fn spawn_server(app: &AppHandle, root: &Path) -> Result<Child, String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    cmd.spawn()
-        .map_err(|e| format!("启动内置服务失败: {e}"))
+    cmd.spawn().map_err(|e| {
+        format!(
+            "启动内置服务失败: {e}\n可执行文件: {}",
+            node_bin.display()
+        )
+    })
 }
 
-/// 轮询等待端口就绪
-fn wait_for_port(port: u16, timeout: Duration) -> bool {
+/// 极简时间戳（不引第三方 crate，避免额外依赖）
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix:{secs}")
+}
+
+/// 等待端口就绪；进程提前退出则立即返回，不用干等 90 秒
+fn wait_ready(port: u16, timeout: Duration, child: &mut Child) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
-            Duration::from_millis(300),
-        )
-        .is_ok()
-        {
-            return true;
+        if port_in_use(port) {
+            return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(250));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "服务进程已退出（退出码 {}），通常是缺少依赖或数据库无法打开，详见下方日志",
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("无法获取服务进程状态: {e}")),
+        }
+        std::thread::sleep(Duration::from_millis(300));
     }
-    false
+    Err(format!(
+        "等待端口 {port} 超时（{}s）。首次启动可能被杀毒软件全盘扫描拖慢，详见下方日志",
+        timeout.as_secs()
+    ))
+}
+
+/// 读日志尾部
+fn tail_log(app: &AppHandle, max_lines: usize) -> String {
+    let Ok(path) = log_file(app) else {
+        return String::new();
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
 }
 
 fn kill_server(state: &State<ServerProcess>) {
@@ -191,7 +340,7 @@ fn kill_server(state: &State<ServerProcess>) {
 /*  命令                                                                       */
 /* -------------------------------------------------------------------------- */
 
-/// 应用信息（前端「数据目录」按钮、关于页用）
+/// 应用信息（前端「数据目录」按钮、关于页、排障用）
 #[tauri::command]
 fn app_info(app: AppHandle) -> Result<AppInfo, String> {
     let root = data_dir(&app)?;
@@ -201,9 +350,16 @@ fn app_info(app: AppHandle) -> Result<AppInfo, String> {
         db_file: root.join("workbench.db").to_string_lossy().to_string(),
         material_dir: root.join("ai-material").to_string_lossy().to_string(),
         backup_dir: root.join("backups").to_string_lossy().to_string(),
+        log_file: root.join("logs").join("server.log").to_string_lossy().to_string(),
         server_url: format!("http://127.0.0.1:{SERVER_PORT}"),
         is_dev: is_dev(),
     })
+}
+
+/// 读取 sidecar 日志尾部（错误页 / 排障面板用）
+#[tauri::command]
+fn read_server_log(app: AppHandle, lines: Option<usize>) -> Result<String, String> {
+    Ok(tail_log(&app, lines.unwrap_or(80)))
 }
 
 /// 把服务端生成的备份复制到用户选择的位置（系统「另存为」对话框）
@@ -326,6 +482,7 @@ pub fn run() {
         .manage(ServerProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             app_info,
+            read_server_log,
             save_backup_as,
             pick_backup_to_import,
             reveal_data_dir,
@@ -343,33 +500,87 @@ pub fn run() {
             if is_dev() {
                 // 开发态：devUrl 已经由 Tauri 自动加载，直接显示
                 window.show()?;
-            } else {
-                let child = match spawn_server(&handle, &root) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        show_fatal(&window, &e);
-                        window.show()?;
-                        return Ok(());
-                    }
-                };
+                return Ok(());
+            }
 
-                *app.state::<ServerProcess>().0.lock().unwrap() = Some(child);
+            // 1) 端口预检：此时还没 spawn，若已连通说明被别的进程占着
+            if port_in_use(SERVER_PORT) {
+                let detail = format!(
+                    "端口 {port} 已被占用，内置服务无法启动。\n\n\
+                     常见原因：\n\
+                     · 上一次运行崩溃，残留了 node.exe 进程\n\
+                     · 其他程序恰好占用该端口\n\n\
+                     排查：任务管理器结束所有 node.exe 后重开；\n\
+                     或在 PowerShell 执行：\n\
+                     netstat -ano | findstr :{port}",
+                    port = SERVER_PORT
+                );
+                show_fatal(&window, "端口被占用", &detail, &tail_log(&handle, 30));
+                window.show()?;
+                return Ok(());
+            }
 
-                if !wait_for_port(SERVER_PORT, START_TIMEOUT) {
-                    show_fatal(
-                        &window,
-                        "内置服务启动超时（40s）。\n可能原因：杀毒软件拦截、端口被占用、安装包缺少 server 目录。",
-                    );
+            // 2) 准备运行时：首次启动把 server.zip 解压到 App 数据目录
+            let runtime = match ensure_runtime(&handle) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    show_fatal(&window, "运行时准备失败", &e, "");
                     window.show()?;
                     return Ok(());
                 }
+            };
 
-                let url: tauri::Url = format!("http://127.0.0.1:{SERVER_PORT}")
-                    .parse()
-                    .expect("服务地址解析失败");
-                window.navigate(url)?;
+            // 3) 拉起 sidecar
+            let mut child = match spawn_server(&handle, &runtime, &root) {
+                Ok(c) => c,
+                Err(e) => {
+                    show_fatal(&window, "启动失败", &e, &tail_log(&handle, 30));
+                    window.show()?;
+                    return Ok(());
+                }
+            };
+
+            // 4) 等端口就绪（进程提前退出会立刻返回，不等满 90s）
+            let ready = wait_ready(SERVER_PORT, START_TIMEOUT, &mut child);
+            *app.state::<ServerProcess>().0.lock().unwrap() = Some(child);
+
+            if let Err(reason) = ready {
+                let node_display = handle
+                    .path()
+                    .resource_dir()
+                    .map(|p| {
+                        if cfg!(windows) {
+                            p.join("node.exe")
+                        } else {
+                            p.join("node")
+                        }
+                        .display()
+                        .to_string()
+                    })
+                    .unwrap_or_default();
+
+                let detail = format!(
+                    "{reason}\n\n日志文件：\n{log}\n\n\
+                     手动复现（在命令行里执行，可直接看到完整报错）：\n\
+                     cd \"{runtime}\"\n\
+                     \"{node}\" .\\server.js",
+                    reason = reason,
+                    log = log_file(&handle)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
+                    runtime = runtime.display(),
+                    node = node_display,
+                );
+                show_fatal(&window, "内置服务启动失败", &detail, &tail_log(&handle, 60));
                 window.show()?;
+                return Ok(());
             }
+
+            let url: tauri::Url = format!("http://127.0.0.1:{SERVER_PORT}")
+                .parse()
+                .expect("服务地址解析失败");
+            window.navigate(url)?;
+            window.show()?;
 
             Ok(())
         })
@@ -385,21 +596,62 @@ pub fn run() {
     });
 }
 
-/// 启动失败时给用户一个可读的提示页，而不是白屏
-fn show_fatal(window: &tauri::WebviewWindow, message: &str) {
+/* -------------------------------------------------------------------------- */
+/*  错误页                                                                     */
+/* -------------------------------------------------------------------------- */
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// 启动失败时给出可读的诊断页，而不是白屏
+fn show_fatal(window: &tauri::WebviewWindow, title: &str, detail: &str, log_tail: &str) {
+    let log_block = if log_tail.trim().is_empty() {
+        String::from("<p class=\"muted\">（暂无日志输出，进程可能根本没起来）</p>")
+    } else {
+        format!(
+            "<h2>server.log（末尾）</h2><pre class=\"log\">{}</pre>",
+            html_escape(log_tail)
+        )
+    };
+
     let html = format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><style>
-        body{{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
-        background:#F7F6F3;color:#1F2937;font-family:"Microsoft YaHei",system-ui,sans-serif}}
-        .box{{max-width:560px;padding:28px 32px;background:#fff;border:1px solid rgba(16,36,46,.08);
-        border-radius:12px;box-shadow:0 8px 24px rgba(16,36,46,.12)}}
-        h1{{font-size:16px;margin:0 0 10px;color:#DC2626}}
-        pre{{white-space:pre-wrap;font-size:12.5px;line-height:1.8;color:#374151;margin:0}}
-        </style></head><body><div class="box"><h1>启动失败</h1><pre>{}</pre></div></body></html>"#,
-        message.replace('&', "&amp;").replace('<', "&lt;")
+        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>启动失败</title><style>
+        *{{box-sizing:border-box}}
+        body{{margin:0;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;
+        background:#F7F6F3;color:#1F2937;font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;padding:32px 20px}}
+        .box{{width:100%;max-width:720px;background:#fff;border:1px solid rgba(16,36,46,.08);
+        border-radius:12px;box-shadow:0 8px 24px rgba(16,36,46,.12);padding:24px 28px}}
+        h1{{font-size:17px;margin:0 0 4px;color:#DC2626}}
+        .sub{{font-size:12px;color:#6B7280;margin:0 0 16px}}
+        h2{{font-size:12px;margin:18px 0 6px;color:#374151;font-weight:600}}
+        pre{{white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.75;
+        color:#374151;margin:0;font-family:Consolas,"Courier New",monospace}}
+        pre.log{{background:#0B181F;color:#D9ECF2;padding:12px 14px;border-radius:8px;max-height:300px;overflow:auto}}
+        .muted{{font-size:12px;color:#9CA3AF;margin:0}}
+        .tip{{margin-top:16px;padding:10px 12px;background:#F0F7F9;border-left:3px solid #3D97B5;
+        border-radius:6px;font-size:12px;line-height:1.8;color:#1F4E5F}}
+        </style></head><body><div class="box">
+        <h1>{title}</h1>
+        <p class="sub">本地个人工作台 · 内置服务未能就绪</p>
+        <pre>{detail}</pre>
+        {log_block}
+        <div class="tip">
+          排查建议：关闭本窗口后重新打开可重试；仍失败请把上面这段日志发出来。<br>
+          数据与日志目录：<b>%APPDATA%\com.local.workbench</b>（logs\server.log）
+        </div>
+        </div></body></html>"#,
+        title = html_escape(title),
+        detail = html_escape(detail),
+        log_block = log_block,
     );
-    let _ = window.eval(&format!(
+
+    let js = format!(
         "document.open();document.write({});document.close();",
         serde_json::to_string(&html).unwrap_or_else(|_| "\"\"".into())
-    ));
+    );
+    let _ = window.eval(&js);
 }
