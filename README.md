@@ -8,6 +8,18 @@
 - 不内置模型、不打包 LM Studio，LM Studio 作为外部独立程序运行
 - 已适配 **Tauri v2**，可在 GitHub Actions 上直接构建 Windows exe（本机无需装 Rust）
 
+## 文档导航
+
+| 文档 | 看它做什么 |
+| --- | --- |
+| **README.md**（本文件） | 怎么装、怎么跑、怎么打包 |
+| [TAURI.md](./TAURI.md) | 桌面化架构、环境安装、打包细节、**启动失败排查** |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | **要改功能先看这个**：改动菜谱、提交与发版流程 |
+| [AGENTS.md](./AGENTS.md) | 给 AI 助手的项目说明书（新开会话先让它读这个） |
+
+> 用 AI 助手改代码时，开头说一句「先读 AGENTS.md 和 CONTRIBUTING.md」，
+> 它就能拿到架构约束、文件地图和踩过的坑，不用你重新解释一遍。
+
 ---
 
 ## 0. 用 GitHub Actions 打包 exe（推荐，零本地环境）
