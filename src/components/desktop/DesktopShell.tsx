@@ -2,7 +2,13 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { FolderOpen, Maximize2, MousePointerSquareDashed, RefreshCw, TerminalSquare } from 'lucide-react';
-import { installDesktopContextMenuGuard, isTauri, openExternal, revealDataDir } from '@/lib/desktop';
+import {
+  installDesktopContextMenuGuard,
+  invokeCmd,
+  isTauri,
+  openExternal,
+  revealDataDir,
+} from '@/lib/desktop';
 
 type MenuState = { x: number; y: number } | null;
 
@@ -116,16 +122,17 @@ export function DesktopShell() {
           setMenu(null);
         }}
       />
-      <MenuItem
-        icon={<TerminalSquare size={12} />}
-        label="开发者工具"
-        hint="Ctrl Shift I"
-        onClick={() => {
-          // Tauri v2 默认屏蔽 devtools 快捷键，这里用窗口事件放行
-          window.dispatchEvent(new CustomEvent('wb:toggle-devtools'));
-          setMenu(null);
-        }}
-      />
+      {process.env.NODE_ENV !== 'production' && (
+        <MenuItem
+          icon={<TerminalSquare size={12} />}
+          label="开发者工具"
+          hint="Dev"
+          onClick={() => {
+            void invokeCmd('toggle_devtools').catch(() => {});
+            setMenu(null);
+          }}
+        />
+      )}
     </div>
   );
 }

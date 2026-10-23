@@ -15,7 +15,6 @@
     "core:app:default",
     "core:resources:default",
 
-    "fs:default",
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [{ "path": "$APPDATA/**" }]
