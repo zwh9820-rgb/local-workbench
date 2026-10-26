@@ -22,12 +22,15 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   ArrowLeft,
+  ArrowUpToLine,
   Check,
+  Copy,
   FileText,
   Frame,
   LayoutTemplate,
   Map as MapIcon,
   Maximize2,
+  Pencil,
   Plus,
   StickyNote,
   Terminal,
@@ -65,12 +68,13 @@ function toFlowNode(
   n: CanvasNode,
   onEdit: (id: string) => void,
   onRunComfy?: (id: string) => void,
+  onResize?: (id: string, w: number, h: number) => void,
 ): WBNode {
   return {
     id: n.id,
     type: 'wb',
     position: { x: n.positionX, y: n.positionY },
-    data: { node: n, onEdit, onRunComfy },
+    data: { node: n, onEdit, onRunComfy, onResize },
     style: { width: n.width, height: n.height, zIndex: n.zIndex },
     width: n.width,
     height: n.height,
@@ -146,6 +150,11 @@ function EditorInner({
   const [isTemplate, setIsTemplate] = useState(canvas.isTemplate);
   const [toast, setToast] = useState<string | null>(null);
   const [showMinimap, setShowMinimap] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    nodeId?: string;
+  } | null>(null);
 
   /* --------------------------- ComfyUI 实时通道 --------------------------- */
   // prompt_id → 画布节点 id（提交时记录，WS 消息只带 prompt_id）
@@ -198,8 +207,14 @@ function EditorInner({
     void runComfyRef.current(id);
   }, []);
 
+  // 尺寸回调同样用 ref 中转，保证初始化时就能挂上
+  const resizeRef = useRef<(id: string, w: number, h: number) => void>(() => {});
+  const onNodeResizeStable = useCallback((id: string, w: number, h: number) => {
+    resizeRef.current(id, w, h);
+  }, []);
+
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<WBNode>(
-    initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy)),
+    initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy, onNodeResizeStable)),
   );
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>(
     canvas.edges.map(toFlowEdge),
@@ -227,6 +242,32 @@ function EditorInner({
     },
     [setRfNodes],
   );
+
+  /** 拖拽改尺寸：本地先更新，松手后落库 */
+  const onNodeResize = useCallback(
+    async (id: string, width: number, height: number) => {
+      const w = Math.round(width);
+      const h = Math.round(height);
+      setRfNodes((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, width: w, height: h, style: { ...n.style, width: w, height: h } }
+            : n,
+        ),
+      );
+      try {
+        await updateCanvasNode(id, { width: w, height: h });
+        setSavedAt(Date.now());
+      } catch (err) {
+        console.error('[canvas] 保存尺寸失败', err);
+      }
+    },
+    [setRfNodes],
+  );
+
+  useEffect(() => {
+    resizeRef.current = (id, w, h) => void onNodeResize(id, w, h);
+  }, [onNodeResize]);
 
   /** 收集结果：拉历史 → 生成 image 节点 → 刷新画布数据 */
   const collectResult = useCallback(
@@ -326,7 +367,7 @@ function EditorInner({
   );
 
   useEffect(() => {
-    setRfNodes(initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy)));
+    setRfNodes(initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy, onNodeResizeStable)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeSignature]);
 
@@ -485,39 +526,77 @@ function EditorInner({
     flashSaved();
   }, [rfNodes, setRfNodes, setRfEdges, canvas.id, flashSaved]);
 
+  /** 删除单个节点（右键菜单） */
+  const deleteNode = useCallback(
+    async (id: string) => {
+      setRfNodes((prev) => prev.filter((n) => n.id !== id));
+      setRfEdges((prev) =>
+        prev.filter((e) => e.source !== id && e.target !== id),
+      );
+      await deleteCanvasNodes(canvas.id, [id]);
+      flashSaved();
+    },
+    [canvas.id, setRfNodes, setRfEdges, flashSaved],
+  );
+
   /* ------------------------------ 快捷键 -------------------------------- */
 
-  /** 复制选中节点（Ctrl+D） */
-  const duplicateSelected = useCallback(async () => {
-    const selected = rfNodes.filter((n) => n.selected);
-    if (selected.length === 0) return;
+  /** 复制节点（Ctrl+D / 右键菜单共用） */
+  const duplicateNodes = useCallback(
+    async (targets: WBNode[]) => {
+      if (targets.length === 0) return;
 
-    const created: CanvasNode[] = [];
-    for (const n of selected) {
-      const src = n.data.node;
-      const row = await createCanvasNode({
-        canvasId: canvas.id,
-        nodeType: src.nodeType,
-        title: src.title,
-        content: src.content,
-        filePath: src.filePath,
-        imagePath: src.imagePath,
-        positionX: src.positionX + 36,
-        positionY: src.positionY + 36,
-        width: src.width,
-        height: src.height,
-        zIndex: src.zIndex + 1,
-        meta: src.meta,
-      });
-      created.push(row);
-    }
+      const created: CanvasNode[] = [];
+      for (const n of targets) {
+        const src = n.data.node;
+        const row = await createCanvasNode({
+          canvasId: canvas.id,
+          nodeType: src.nodeType,
+          title: src.title,
+          content: src.content,
+          filePath: src.filePath,
+          imagePath: src.imagePath,
+          positionX: src.positionX + 36,
+          positionY: src.positionY + 36,
+          width: src.width,
+          height: src.height,
+          zIndex: src.zIndex + 1,
+          meta: src.meta,
+        });
+        created.push(row);
+      }
 
-    setRfNodes((prev) => [
-      ...prev.map((n) => ({ ...n, selected: false })),
-      ...created.map((r) => ({ ...toFlowNode(r, onEdit, onRunComfy), selected: true })),
-    ]);
-    showToast(`已复制 ${created.length} 个节点`);
-  }, [rfNodes, canvas.id, setRfNodes, onEdit, onRunComfy, showToast]);
+      setRfNodes((prev) => [
+        ...prev.map((n) => ({ ...n, selected: false })),
+        ...created.map((r) => ({
+          ...toFlowNode(r, onEdit, onRunComfy, onNodeResizeStable),
+          selected: true,
+        })),
+      ]);
+      showToast(`已复制 ${created.length} 个节点`);
+    },
+    [canvas.id, setRfNodes, onEdit, onRunComfy, onNodeResizeStable, showToast],
+  );
+
+  const duplicateSelected = useCallback(() => {
+    void duplicateNodes(rfNodes.filter((n) => n.selected));
+  }, [rfNodes, duplicateNodes]);
+
+  /** 置顶（把 zIndex 抬到最高） */
+  const bringToFront = useCallback(
+    async (id: string) => {
+      const maxZ = rfNodes.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0) + 1;
+      setRfNodes((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, zIndex: maxZ, style: { ...n.style, zIndex: maxZ } }
+            : n,
+        ),
+      );
+      await updateCanvasNode(id, { zIndex: maxZ });
+    },
+    [rfNodes, setRfNodes],
+  );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -647,12 +726,21 @@ function EditorInner({
           onNodeDragStop={onNodeDragStop}
           onNodeDoubleClick={(_, node) => setEditingId(node.id)}
           onMoveEnd={(_, vp) => persistViewport(vp)}
+          onNodeContextMenu={(e, node) => {
+            e.preventDefault();
+            setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id });
+          }}
+          onPaneContextMenu={(e) => {
+            e.preventDefault();
+            setContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+          onPaneClick={() => setContextMenu(null)}
           defaultViewport={canvas.viewState}
           minZoom={0.2}
           maxZoom={2.5}
           selectionOnDrag
           selectionMode={SelectionMode.Partial}
-          panOnDrag={[1, 2]}
+          panOnDrag={[1]}
           panActivationKeyCode="Space"
           deleteKeyCode={null}
           proOptions={{ hideAttribution: true }}
@@ -779,7 +867,7 @@ function EditorInner({
           </span>
           <span className="text-line-strong">·</span>
           <span className="hidden sm:inline">
-            框选 · 空格平移 · 滚轮缩放 · Ctrl+D 复制 · Delete 删除
+            框选 · 空格/中键平移 · 滚轮缩放 · Ctrl+D 复制 · Delete 删除
           </span>
         </span>
 
@@ -797,12 +885,136 @@ function EditorInner({
         </span>
       </div>
 
+      {/* 右键菜单 */}
+      {contextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-50 w-[176px] overflow-hidden rounded-md border border-line bg-app py-1 shadow-float animate-scale-in"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {contextMenu.nodeId ? (
+              <>
+                <CtxItem
+                  icon={<Pencil className="h-3.5 w-3.5" />}
+                  label="编辑"
+                  onClick={() => {
+                    setEditingId(contextMenu.nodeId!);
+                    setContextMenu(null);
+                  }}
+                />
+                <CtxItem
+                  icon={<Copy className="h-3.5 w-3.5" />}
+                  label="复制"
+                  onClick={() => {
+                    const target = rfNodes.find((n) => n.id === contextMenu.nodeId);
+                    if (target) void duplicateNodes([target]);
+                    setContextMenu(null);
+                  }}
+                />
+                <CtxItem
+                  icon={<ArrowUpToLine className="h-3.5 w-3.5" />}
+                  label="置顶"
+                  onClick={() => {
+                    void bringToFront(contextMenu.nodeId!);
+                    setContextMenu(null);
+                  }}
+                />
+                <div className="my-1 h-px bg-line" />
+                <CtxItem
+                  icon={<Trash2 className="h-3.5 w-3.5" />}
+                  label="删除"
+                  danger
+                  onClick={() => {
+                    void deleteNode(contextMenu.nodeId!);
+                    setContextMenu(null);
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <CtxItem
+                  icon={<Type className="h-3.5 w-3.5" />}
+                  label="添加提示词"
+                  onClick={() => {
+                    void addNode('prompt');
+                    setContextMenu(null);
+                  }}
+                />
+                <CtxItem
+                  icon={<StickyNote className="h-3.5 w-3.5" />}
+                  label="添加便签"
+                  onClick={() => {
+                    void addNode('note');
+                    setContextMenu(null);
+                  }}
+                />
+                <CtxItem
+                  icon={<Terminal className="h-3.5 w-3.5" />}
+                  label="添加 ComfyUI 任务"
+                  onClick={() => {
+                    void addNode('comfy_run');
+                    setContextMenu(null);
+                  }}
+                />
+                <div className="my-1 h-px bg-line" />
+                <CtxItem
+                  icon={<Maximize2 className="h-3.5 w-3.5" />}
+                  label="适应画布"
+                  onClick={() => {
+                    fitView({ padding: 0.18, duration: 320 });
+                    setContextMenu(null);
+                  }}
+                />
+              </>
+            )}
+          </div>
+        </>
+      )}
+
       <NodeEditorDialog
         node={editingNode}
         onClose={() => setEditingId(null)}
         onSaved={handleNodeSaved}
       />
     </div>
+  );
+}
+
+/* -------------------------------- 右键项 -------------------------------- */
+
+function CtxItem({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors',
+        danger
+          ? 'text-ink-secondary hover:bg-app-hover hover:text-[var(--error)]'
+          : 'text-ink-secondary hover:bg-app-hover hover:text-ink',
+      )}
+    >
+      <span className="text-ink-muted">{icon}</span>
+      {label}
+    </button>
   );
 }
 

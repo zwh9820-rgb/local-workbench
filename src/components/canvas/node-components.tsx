@@ -2,7 +2,7 @@
 
 import { memo, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { Handle, NodeResizer, Position, type Node, type NodeProps } from '@xyflow/react';
 import {
   FileText,
   Frame,
@@ -22,6 +22,8 @@ export interface WBNodeData extends Record<string, unknown> {
   node: CanvasNode;
   onEdit: (id: string) => void;
   onRunComfy?: (id: string) => void;
+  /** 拖拽改尺寸结束后回调（持久化 width/height） */
+  onResize?: (id: string, width: number, height: number) => void;
   running?: boolean;
 }
 
@@ -52,6 +54,14 @@ function WorkbenchNodeInner({ data, selected }: NodeProps<WBNode>) {
           selected ? 'border-ink' : 'border-line-strong',
         )}
       >
+        <NodeResizer
+          isVisible={selected}
+          minWidth={200}
+          minHeight={120}
+          lineClassName="!border-line-strong"
+          handleClassName="!h-1.5 !w-1.5 !rounded-sm !border !border-line-strong !bg-app"
+          onResizeEnd={(_, p) => data.onResize?.(node.id, p.width, p.height)}
+        />
         <div className="flex items-center gap-1.5 px-2 py-1 text-2xs text-ink-secondary">
           <Frame className="h-3 w-3" />
           <span className="truncate">{node.title || '分组'}</span>
@@ -73,6 +83,16 @@ function WorkbenchNodeInner({ data, selected }: NodeProps<WBNode>) {
       {/* 连线锚点 */}
       <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Right} style={HANDLE_STYLE} />
+
+      {/* 拖拽改尺寸 */}
+      <NodeResizer
+        isVisible={selected}
+        minWidth={200}
+        minHeight={120}
+        lineClassName="!border-line-strong"
+        handleClassName="!h-1.5 !w-1.5 !rounded-sm !border !border-line-strong !bg-app"
+        onResizeEnd={(_, p) => data.onResize?.(node.id, p.width, p.height)}
+      />
 
       {/* 标题栏 */}
       <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-line px-2">

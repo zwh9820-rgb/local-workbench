@@ -3,6 +3,7 @@
  * 说明：所有枚举值必须与 src/db/schema.ts 中的 enum 保持一致。
  */
 import {
+  CalendarDays,
   CheckSquare,
   Frame,
   LayoutDashboard,
@@ -29,6 +30,7 @@ export const NAV_GROUPS: Array<{ title: string; items: NavItem[] }> = [
     items: [
       { href: '/', label: '总览', icon: LayoutDashboard },
       { href: '/todo', label: '待办', icon: CheckSquare, hint: 'Ctrl+T' },
+      { href: '/calendar', label: '日历', icon: CalendarDays },
       { href: '/review', label: '复盘', icon: NotebookPen },
       { href: '/inspiration', label: '灵感', icon: Lightbulb, hint: 'Ctrl+N' },
     ],
@@ -143,3 +145,18 @@ export const REVIEW_TEMPLATE = `## 今日完成
 
 ## 随手记
 `;
+
+/** Agent 工具中文名（前后端共用，不要放在 server 模块里） */
+export const AGENT_TOOL_LABELS: Record<string, string> = {
+  listInspiration: '检索灵感',
+  createInspiration: '新建灵感',
+  updateInspiration: '修改灵感',
+  listTodo: '查询待办',
+  createTodo: '新建待办',
+  toggleTodo: '勾选待办',
+  createReview: '写复盘',
+  searchAll: '全局检索',
+  listCanvas: '列出画布',
+  getCanvas: '读取画布',
+  createCanvasNode: '画布建节点',
+};

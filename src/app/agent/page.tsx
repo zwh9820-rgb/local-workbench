@@ -1,28 +1,62 @@
-import { Sparkles } from 'lucide-react';
-import { PageScroll } from '@/components/layout/page-container';
-import { Card, EmptyState, PageHeader } from '@/components/ui/card';
+import { desc, eq, asc } from 'drizzle-orm';
+import { db } from '@/db';
+import { agentSession, agentToolLog } from '@/db/schema';
+import { readSettings } from '@/server/settings';
+import { AgentClient } from './agent-client';
 
+export const dynamic = 'force-dynamic';
 export const metadata = { title: 'AI 助手' };
 
-/**
- * Agent 面板（占位）
- * 下一阶段接入：OpenAI SDK → LM Studio function calling + 工具执行 + 会话回放
- */
-export default function AgentPage() {
-  return (
-    <PageScroll maxWidth="max-w-[860px]">
-      <PageHeader
-        title="AI 助手"
-        description="内嵌式 Agent，运行在本地服务端，只读写本机数据库"
-      />
+export default async function AgentPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ session?: string }>;
+}) {
+  const sp = await searchParams;
 
-      <Card className="mt-4">
-        <EmptyState
-          icon={<Sparkles />}
-          title="Agent 正在接入"
-          description="下一步会接通 LM Studio 的 function calling：查询灵感、建待办、写复盘、读画布、在画布建节点。Agent 不会自动提交 ComfyUI 生成任务，出图始终需要你手动点击运行。"
-        />
-      </Card>
-    </PageScroll>
+  const sessions = db
+    .select({
+      id: agentSession.id,
+      title: agentSession.title,
+      messageCount: agentSession.messageCount,
+      updatedAt: agentSession.updatedAt,
+    })
+    .from(agentSession)
+    .where(eq(agentSession.status, 'active'))
+    .orderBy(desc(agentSession.updatedAt))
+    .limit(100)
+    .all();
+
+  const activeId = sp.session ?? sessions[0]?.id;
+  const session = activeId
+    ? db.select().from(agentSession).where(eq(agentSession.id, activeId)).get()
+    : null;
+
+  const logs = activeId
+    ? db
+        .select()
+        .from(agentToolLog)
+        .where(eq(agentToolLog.sessionId, activeId))
+        .orderBy(asc(agentToolLog.createdAt))
+        .all()
+    : [];
+
+  const settings = readSettings();
+
+  return (
+    <AgentClient
+      initialSessions={sessions}
+      initialSession={session ?? null}
+      initialLogs={logs.map((l) => ({
+        id: l.id,
+        toolName: l.toolName,
+        status: l.status,
+        durationMs: l.durationMs,
+        error: l.error,
+        createdAt: l.createdAt,
+      }))}
+      model={settings.lmStudio.model}
+      baseUrl={settings.lmStudio.baseUrl}
+    />
   );
 }
