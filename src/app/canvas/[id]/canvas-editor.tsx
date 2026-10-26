@@ -26,6 +26,7 @@ import {
   ArrowUpToLine,
   Check,
   Copy,
+  Download,
   FileText,
   Frame,
   ImagePlus,
@@ -993,6 +994,29 @@ function EditorInner({
     router.refresh();
   };
 
+  /** 模板实例化：用填好的变量生成一个新节点 */
+  const handleInstantiate = async (source: CanvasNode, filled: string) => {
+    const row = await createCanvasNode({
+      canvasId: canvas.id,
+      nodeType: 'prompt',
+      title: `${source.title || '模板'} · 实例`,
+      content: filled,
+      positionX: source.positionX + source.width + 48,
+      positionY: source.positionY,
+      width: 340,
+      height: 260,
+      zIndex: rfNodes.length,
+      meta: {},
+    });
+
+    setRfNodes((prev) => [
+      ...prev,
+      toFlowNode(row, onEdit, onRunComfy, onNodeResizeStable),
+    ]);
+    showToast('已生成实例节点');
+    router.refresh();
+  };
+
   /* -------------------------------- 渲染 -------------------------------- */
 
   return (
@@ -1363,8 +1387,10 @@ function EditorInner({
 
       <NodeEditorDialog
         node={editingNode}
+        comfyHost={comfyHost}
         onClose={() => setEditingId(null)}
         onSaved={handleNodeSaved}
+        onInstantiate={handleInstantiate}
       />
     </div>
   );
@@ -1404,19 +1430,25 @@ function CtxItem({
 
 function NodeEditorDialog({
   node,
+  comfyHost,
   onClose,
   onSaved,
+  onInstantiate,
 }: {
   node: CanvasNode | null;
+  comfyHost: string;
   onClose: () => void;
   onSaved: (n: CanvasNode) => void;
+  onInstantiate?: (node: CanvasNode, filled: string) => void;
 }) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [filePath, setFilePath] = useState('');
   const [promptOverride, setPromptOverride] = useState('');
   const [workflowText, setWorkflowText] = useState('');
+  const [varValues, setVarValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1428,6 +1460,7 @@ function NodeEditorDialog({
     setWorkflowText(
       node.meta?.workflowJson ? JSON.stringify(node.meta.workflowJson, null, 2) : '',
     );
+    setVarValues({});
     setError(null);
   }, [node]);
 
@@ -1437,6 +1470,39 @@ function NodeEditorDialog({
     node.nodeType === 'prompt' ||
     node.nodeType === 'note' ||
     node.nodeType === 'template';
+
+  /** 模板里的变量名 */
+  const templateVars =
+    node.nodeType === 'template'
+      ? Array.from(
+          new Set(
+            Array.from(content.matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)).map((m) => m[1]),
+          ),
+        )
+      : [];
+
+  /** 从 ComfyUI 抓取最近一次执行的工作流（API 格式） */
+  const fetchWorkflow = async () => {
+    setFetching(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/comfy/workflow?host=${encodeURIComponent(comfyHost)}`,
+      );
+      const data = (await res.json()) as {
+        ok?: boolean;
+        workflow?: Record<string, unknown>;
+        promptId?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.workflow) throw new Error(data.error ?? '抓取失败');
+      setWorkflowText(JSON.stringify(data.workflow, null, 2));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '抓取失败');
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -1508,6 +1574,48 @@ function NodeEditorDialog({
           </Field>
         )}
 
+        {/* 模板变量填充 → 生成实例节点 */}
+        {node.nodeType === 'template' && templateVars.length > 0 && (
+          <div className="rounded-md border border-line bg-app-panel p-2.5">
+            <p className="mb-2 text-2xs text-ink-muted">
+              填入变量后可以生成一个新节点，模板本身保持不变
+            </p>
+            <div className="space-y-1.5">
+              {templateVars.map((v) => (
+                <div key={v} className="flex items-center gap-2">
+                  <span className="w-[110px] shrink-0 truncate text-2xs text-ink-secondary">
+                    {`{{${v}}}`}
+                  </span>
+                  <Input
+                    value={varValues[v] ?? ''}
+                    onChange={(e) =>
+                      setVarValues((prev) => ({ ...prev, [v]: e.target.value }))
+                    }
+                    className="h-7 text-xs"
+                    placeholder={`输入 ${v}`}
+                  />
+                </div>
+              ))}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Plus />}
+              className="mt-2"
+              onClick={() => {
+                const filled = content.replace(
+                  /\{\{\s*([\w-]+)\s*\}\}/g,
+                  (whole, name: string) => varValues[name]?.trim() || whole,
+                );
+                onInstantiate?.(node, filled);
+                onClose();
+              }}
+            >
+              生成实例节点
+            </Button>
+          </div>
+        )}
+
         {node.nodeType === 'file' && (
           <Field label="本地路径" hint="仅记录，不读取文件">
             <Input
@@ -1520,7 +1628,10 @@ function NodeEditorDialog({
 
         {node.nodeType === 'comfy_run' && (
           <>
-            <Field label="提示词覆盖" hint="会替换工作流中的正向提示词文本，支持 {{变量}}">
+            <Field
+              label="提示词覆盖"
+              hint="会替换工作流里的正向提示词，支持 {{变量}}"
+            >
               <Textarea
                 value={promptOverride}
                 onChange={(e) => setPromptOverride(e.target.value)}
@@ -1528,7 +1639,22 @@ function NodeEditorDialog({
                 placeholder="a cyberpunk city at night, neon rain…"
               />
             </Field>
-            <Field label="工作流 JSON" error={error ?? undefined} hint="可粘贴 ComfyUI API 格式工作流">
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-ink-secondary">
+                  工作流 JSON（API 格式）
+                </span>
+                <Button
+                  variant="text"
+                  size="sm"
+                  icon={<Download />}
+                  loading={fetching}
+                  onClick={() => void fetchWorkflow()}
+                >
+                  抓取当前工作流
+                </Button>
+              </div>
               <textarea
                 value={workflowText}
                 onChange={(e) => setWorkflowText(e.target.value)}
@@ -1536,7 +1662,14 @@ function NodeEditorDialog({
                 className="h-[180px] w-full resize-y rounded-md border border-line bg-app p-2 font-mono text-[11px] leading-5 text-ink focus:border-line-strong focus:outline-none"
                 placeholder='{ "3": { "class_type": "KSampler", ... } }'
               />
-            </Field>
+              {error ? (
+                <p className="text-2xs text-[var(--error)]">{error}</p>
+              ) : (
+                <p className="text-2xs text-ink-muted">
+                  从 ComfyUI 读取最近一次执行的工作流；也可以直接粘贴 API 格式 JSON
+                </p>
+              )}
+            </div>
           </>
         )}
       </div>

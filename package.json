@@ -1,6 +1,6 @@
 {
   "name": "ai-content-workbench",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "private": true,
   "description": "本地 AI 内容生产工作台 —— 无限画布 + ComfyUI 调度 + 内嵌 Agent（黑白极简）",
   "engines": {

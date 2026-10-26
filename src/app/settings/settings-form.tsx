@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Check, Download, Plus, Save, Trash2, Upload } from 'lucide-react';
 import type { AppSettings } from '@/server/settings';
 import { saveAppSettings } from '@/server/actions/settings';
 import { PageScroll } from '@/components/layout/page-container';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/dialog';
 import { Field, Input } from '@/components/ui/input';
 import { Card, CardHeader, PageHeader } from '@/components/ui/card';
 import { ThemeSegmented } from '@/components/layout/theme-toggle';
@@ -25,6 +26,39 @@ export function SettingsForm({
   const [lm, setLm] = useState(initial.lmStudio);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  const importRef = useRef<HTMLInputElement>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+
+  /** 执行导入：走 ATTACH 逐表覆盖，全程不重启 */
+  const doImport = async () => {
+    if (!pendingFile) return;
+    setImporting(true);
+    setImportMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', pendingFile);
+      const res = await fetch('/api/backup/import', { method: 'POST', body: fd });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        counts?: Record<string, number>;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) throw new Error(data.error ?? '导入失败');
+
+      const total = Object.values(data.counts ?? {}).reduce((a, b) => a + b, 0);
+      setImportMsg(`导入成功，共恢复 ${total} 条记录。刷新页面即可看到。`);
+      // 数据整体替换，刷新让各页面重新取数
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setImporting(false);
+      setPendingFile(null);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -215,21 +249,57 @@ export function SettingsForm({
               </a>
               <button
                 type="button"
-                disabled
-                title="下一阶段开放"
-                className="inline-flex h-7 cursor-not-allowed items-center gap-1 rounded-md border border-line px-2 text-xs text-ink-muted opacity-50"
+                onClick={() => importRef.current?.click()}
+                disabled={importing}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-line px-2 text-xs text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink disabled:opacity-50"
               >
                 <Upload className="h-3.5 w-3.5" />
-                导入备份
+                {importing ? '导入中…' : '导入备份'}
               </button>
+              <input
+                ref={importRef}
+                type="file"
+                accept=".zip,application/zip"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f) setPendingFile(f);
+                }}
+              />
             </div>
+
+            {importMsg && (
+              <p className="rounded-md border border-line bg-app px-2 py-1.5 text-2xs leading-5 text-ink-secondary">
+                {importMsg}
+              </p>
+            )}
+
             <p className="text-2xs leading-5 text-ink-muted">
               导出内容包含 SQLite 快照与设置文件，不含 ComfyUI / LM Studio 的任何数据。
-              导入功能将在下一阶段提供（需要先关闭正在运行的实例）。
+              导入会<strong className="text-ink-secondary">整体覆盖</strong>当前数据库，
+              导入前系统会自动生成一份 <code className="rounded-sm bg-app-hover px-1">.before-import</code> 快照。
             </p>
           </div>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingFile)}
+        onClose={() => setPendingFile(null)}
+        onConfirm={doImport}
+        title="导入备份"
+        message={
+          <>
+            将用「{pendingFile?.name}」覆盖当前全部数据（待办、灵感、复盘、画布、日程等）。
+            <br />
+            导入前会自动生成一份当前数据库快照，确定继续？
+          </>
+        }
+        confirmText="覆盖导入"
+        danger
+        loading={importing}
+      />
     </PageScroll>
   );
 }

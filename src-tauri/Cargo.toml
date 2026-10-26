@@ -1,6 +1,6 @@
 [package]
 name = "ai-content-workbench"
-version = "5.1.0"
+version = "5.2.0"
 description = "本地 AI 内容生产工作台"
 authors = ["zwh9820-rgb"]
 edition = "2021"
