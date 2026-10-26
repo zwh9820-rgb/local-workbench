@@ -1,6 +1,7 @@
 'use client';
 
-import { memo, type CSSProperties } from 'react';
+import { memo, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import {
   FileText,
@@ -118,6 +119,8 @@ function WorkbenchNodeInner({ data, selected }: NodeProps<WBNode>) {
 /* ------------------------------- 各类型内容 ------------------------------- */
 
 function ImageBody({ node }: { node: CanvasNode }) {
+  const [preview, setPreview] = useState(false);
+
   if (!node.imagePath) {
     return (
       <div className="flex h-full items-center justify-center text-2xs text-ink-muted">
@@ -125,20 +128,47 @@ function ImageBody({ node }: { node: CanvasNode }) {
       </div>
     );
   }
+
   return (
-    <div className="flex h-full flex-col">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={node.imagePath}
-        alt={node.title}
-        className="min-h-0 w-full flex-1 rounded-sm object-contain"
-      />
-      {node.meta?.positivePrompt && (
-        <p className="mt-1 shrink-0 truncate text-[10px] text-ink-muted">
-          {truncate(String(node.meta.positivePrompt), 80)}
-        </p>
-      )}
-    </div>
+    <>
+      <div className="flex h-full flex-col">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={node.imagePath}
+          alt={node.title}
+          className="nodrag min-h-0 w-full flex-1 cursor-zoom-in rounded-sm object-contain transition-opacity hover:opacity-90"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPreview(true);
+          }}
+        />
+        {node.meta?.positivePrompt && (
+          <p className="mt-1 shrink-0 truncate text-[10px] text-ink-muted">
+            {truncate(String(node.meta.positivePrompt), 80)}
+          </p>
+        )}
+      </div>
+
+      {/* 全屏预览 */}
+      {preview &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-10 animate-fade-in"
+            onClick={() => setPreview(false)}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={node.imagePath}
+              alt={node.title}
+              className="max-h-full max-w-full object-contain"
+            />
+            <span className="absolute bottom-5 text-[11px] text-white/60">
+              点击任意处关闭
+            </span>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 

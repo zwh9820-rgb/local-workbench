@@ -6,6 +6,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
@@ -25,6 +26,8 @@ import {
   FileText,
   Frame,
   LayoutTemplate,
+  Map as MapIcon,
+  Maximize2,
   Plus,
   StickyNote,
   Terminal,
@@ -52,17 +55,22 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Textarea } from '@/components/ui/input';
 import { MarkdownEditor } from '@/components/markdown/markdown-editor';
 import { nodeTypes, type WBNode, type WBNodeData } from '@/components/canvas/node-components';
+import { useComfySocket, type ComfySocketEvent } from '@/components/canvas/use-comfy-socket';
 import { NODE_DEFAULT_SIZE, NODE_TYPE_LABEL } from '@/lib/constants';
 import { cn, debounce, uuid } from '@/lib/utils';
 
 /* ------------------------------ 类型转换 -------------------------------- */
 
-function toFlowNode(n: CanvasNode, onEdit: (id: string) => void): WBNode {
+function toFlowNode(
+  n: CanvasNode,
+  onEdit: (id: string) => void,
+  onRunComfy?: (id: string) => void,
+): WBNode {
   return {
     id: n.id,
     type: 'wb',
     position: { x: n.positionX, y: n.positionY },
-    data: { node: n, onEdit },
+    data: { node: n, onEdit, onRunComfy },
     style: { width: n.width, height: n.height, zIndex: n.zIndex },
     width: n.width,
     height: n.height,
@@ -98,14 +106,21 @@ export function CanvasEditor({
   canvas,
   nodes: initialNodes,
   focusId,
+  comfyHost = 'http://127.0.0.1:8188',
 }: {
   canvas: Canvas;
   nodes: CanvasNode[];
   focusId?: string;
+  comfyHost?: string;
 }) {
   return (
     <ReactFlowProvider>
-      <EditorInner canvas={canvas} initialNodes={initialNodes} focusId={focusId} />
+      <EditorInner
+        canvas={canvas}
+        initialNodes={initialNodes}
+        focusId={focusId}
+        comfyHost={comfyHost}
+      />
     </ReactFlowProvider>
   );
 }
@@ -114,28 +129,207 @@ function EditorInner({
   canvas,
   initialNodes,
   focusId,
+  comfyHost,
 }: {
   canvas: Canvas;
   initialNodes: CanvasNode[];
   focusId?: string;
+  comfyHost: string;
 }) {
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, setCenter } = useReactFlow();
+  const { screenToFlowPosition, setCenter, fitView } = useReactFlow();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [isTemplate, setIsTemplate] = useState(canvas.isTemplate);
+  const [toast, setToast] = useState<string | null>(null);
+  const [showMinimap, setShowMinimap] = useState(false);
+
+  /* --------------------------- ComfyUI 实时通道 --------------------------- */
+  // prompt_id → 画布节点 id（提交时记录，WS 消息只带 prompt_id）
+  const promptMapRef = useRef(new Map<string, string>());
+  const lastProgressRef = useRef(new Map<string, number>());
+  const eventHandlerRef = useRef<(e: ComfySocketEvent) => void>(() => {});
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { connected: comfyConnected, clientId } = useComfySocket(comfyHost, (e) =>
+    eventHandlerRef.current(e),
+  );
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3200);
+  }, []);
 
   const onEdit = useCallback((id: string) => setEditingId(id), []);
 
+  /** 提交任务到 ComfyUI（人工点击触发，Agent 不会调） */
+  const runComfy = useCallback(
+    async (nodeId: string) => {
+      showToast('正在提交到 ComfyUI…');
+      try {
+        const res = await fetch('/api/comfy/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId, clientId }),
+        });
+        const data = (await res.json()) as { promptId?: string; error?: string };
+        if (!res.ok || !data.promptId) throw new Error(data.error ?? '提交失败');
+
+        promptMapRef.current.set(data.promptId, nodeId);
+        showToast('已入队，等待 ComfyUI 执行');
+        router.refresh();
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '提交失败');
+      }
+    },
+    [clientId, router, showToast],
+  );
+
+  // 稳定引用：节点组件拿到的回调不随渲染变化，避免整片节点重绘
+  const runComfyRef = useRef(runComfy);
+  useEffect(() => {
+    runComfyRef.current = runComfy;
+  }, [runComfy]);
+  const onRunComfy = useCallback((id: string) => {
+    void runComfyRef.current(id);
+  }, []);
+
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<WBNode>(
-    initialNodes.map((n) => toFlowNode(n, onEdit)),
+    initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy)),
   );
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>(
     canvas.edges.map(toFlowEdge),
   );
+
+  /** 只改 meta，驱动节点内进度条 */
+  const patchNodeMeta = useCallback(
+    (nodeId: string, patch: Record<string, unknown>) => {
+      setRfNodes((prev) =>
+        prev.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  node: {
+                    ...n.data.node,
+                    meta: { ...(n.data.node.meta ?? {}), ...patch },
+                  },
+                },
+              }
+            : n,
+        ),
+      );
+    },
+    [setRfNodes],
+  );
+
+  /** 收集结果：拉历史 → 生成 image 节点 → 刷新画布数据 */
+  const collectResult = useCallback(
+    async (nodeId: string) => {
+      try {
+        const res = await fetch('/api/comfy/collect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId }),
+        });
+        const data = (await res.json()) as {
+          ok?: boolean;
+          status?: string;
+          images?: number;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(data.error ?? '收集失败');
+
+        if (data.status === 'pending') {
+          // 还没落盘，稍后再试一次
+          setTimeout(() => void collectResult(nodeId), 1500);
+          return;
+        }
+
+        patchNodeMeta(nodeId, { status: 'done', progress: 100 });
+        showToast(
+          data.images && data.images > 0
+            ? `生成完成，已回填 ${data.images} 张图`
+            : '任务完成',
+        );
+        router.refresh();
+      } catch (err) {
+        patchNodeMeta(nodeId, { status: 'error', error: '收集结果失败' });
+        showToast(err instanceof Error ? err.message : '收集失败');
+      }
+    },
+    [patchNodeMeta, router, showToast],
+  );
+
+  /** 进度落库（节流：每涨 5% 报一次） */
+  const reportProgress = useCallback((nodeId: string, percent: number) => {
+    const last = lastProgressRef.current.get(nodeId) ?? -5;
+    if (percent - last < 5 && percent < 100) return;
+    lastProgressRef.current.set(nodeId, percent);
+    void fetch('/api/comfy/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeId, progress: percent }),
+    }).catch(() => {});
+  }, []);
+
+  /** WS 事件 → 节点状态 */
+  const handleComfyEvent = useCallback(
+    (evt: ComfySocketEvent) => {
+      if (evt.type === 'open' || evt.type === 'close' || evt.type === 'status') return;
+
+      const nodeId = evt.promptId ? promptMapRef.current.get(evt.promptId) : undefined;
+      if (!nodeId) return;
+
+      if (evt.type === 'start') {
+        patchNodeMeta(nodeId, { status: 'running', progress: 0 });
+        return;
+      }
+
+      if (evt.type === 'progress') {
+        patchNodeMeta(nodeId, { status: 'running', progress: evt.percent });
+        reportProgress(nodeId, evt.percent);
+        return;
+      }
+
+      if (evt.type === 'done') {
+        patchNodeMeta(nodeId, { status: 'running', progress: 100 });
+        void collectResult(nodeId);
+        return;
+      }
+
+      if (evt.type === 'error') {
+        patchNodeMeta(nodeId, { status: 'error', error: evt.message });
+        showToast(evt.message);
+      }
+    },
+    [patchNodeMeta, reportProgress, collectResult, showToast],
+  );
+
+  useEffect(() => {
+    eventHandlerRef.current = handleComfyEvent;
+  }, [handleComfyEvent]);
+
+  // 服务端数据刷新（例如回填了新 image 节点）→ 重建节点列表
+  const nodeSignature = useMemo(
+    () =>
+      initialNodes
+        .map((n) => n.id)
+        .sort()
+        .join('|'),
+    [initialNodes],
+  );
+
+  useEffect(() => {
+    setRfNodes(initialNodes.map((n) => toFlowNode(n, onEdit, onRunComfy)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeSignature]);
+
 
   // 节点 id → DB 行（编辑弹窗、批量保存时用）
   const nodeMap = useMemo(() => {
@@ -293,6 +487,38 @@ function EditorInner({
 
   /* ------------------------------ 快捷键 -------------------------------- */
 
+  /** 复制选中节点（Ctrl+D） */
+  const duplicateSelected = useCallback(async () => {
+    const selected = rfNodes.filter((n) => n.selected);
+    if (selected.length === 0) return;
+
+    const created: CanvasNode[] = [];
+    for (const n of selected) {
+      const src = n.data.node;
+      const row = await createCanvasNode({
+        canvasId: canvas.id,
+        nodeType: src.nodeType,
+        title: src.title,
+        content: src.content,
+        filePath: src.filePath,
+        imagePath: src.imagePath,
+        positionX: src.positionX + 36,
+        positionY: src.positionY + 36,
+        width: src.width,
+        height: src.height,
+        zIndex: src.zIndex + 1,
+        meta: src.meta,
+      });
+      created.push(row);
+    }
+
+    setRfNodes((prev) => [
+      ...prev.map((n) => ({ ...n, selected: false })),
+      ...created.map((r) => ({ ...toFlowNode(r, onEdit, onRunComfy), selected: true })),
+    ]);
+    showToast(`已复制 ${created.length} 个节点`);
+  }, [rfNodes, canvas.id, setRfNodes, onEdit, onRunComfy, showToast]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -300,7 +526,23 @@ function EditorInner({
         target.tagName === 'INPUT' ||
         target.tagName === 'TEXTAREA' ||
         target.isContentEditable;
+
+      const mod = e.metaKey || e.ctrlKey;
+
+      // Ctrl+0：适应画布（编辑态也允许）
+      if (mod && e.key === '0') {
+        e.preventDefault();
+        fitView({ padding: 0.18, duration: 320 });
+        return;
+      }
+
       if (editing) return;
+
+      if (mod && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        void duplicateSelected();
+        return;
+      }
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
@@ -313,7 +555,7 @@ function EditorInner({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [deleteSelected]);
+  }, [deleteSelected, duplicateSelected, fitView]);
 
   /* --------------------------- 定位到目标节点 --------------------------- */
 
@@ -379,36 +621,6 @@ function EditorInner({
           {savedAt ? '已保存' : `${rfNodes.length} 个节点`}
         </span>
 
-        <div className="relative">
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Plus />}
-            onClick={() => setAddOpen((v) => !v)}
-          >
-            添加
-          </Button>
-
-          {addOpen && (
-            <div className="absolute right-0 top-[calc(100%+6px)] z-40 w-[168px] overflow-hidden rounded-md border border-line bg-app py-1 shadow-float animate-slide-up">
-              {ADD_MENU.map((m) => {
-                const Icon = m.icon;
-                return (
-                  <button
-                    key={m.type}
-                    type="button"
-                    onClick={() => void addNode(m.type)}
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink"
-                  >
-                    <Icon className="h-3.5 w-3.5 text-ink-muted" />
-                    {m.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
         <Button
           variant="ghost"
           size="sm"
@@ -424,7 +636,7 @@ function EditorInner({
       </div>
 
       {/* 画布 */}
-      <div ref={wrapperRef} className="min-h-0 flex-1">
+      <div ref={wrapperRef} className="relative min-h-0 flex-1">
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -452,13 +664,125 @@ function EditorInner({
             size={1}
             color="var(--canvas-dot)"
           />
+          {showMinimap && (
+            <MiniMap
+              pannable
+              zoomable
+              position="bottom-left"
+              style={{ width: 160, height: 110 }}
+              maskColor="var(--canvas-selection)"
+              nodeColor="var(--border-strong)"
+              nodeStrokeColor="var(--text-muted)"
+            />
+          )}
           <Controls showInteractive={false} position="bottom-right" />
         </ReactFlow>
+
+        {/* 空画布引导 */}
+        {rfNodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="pointer-events-auto max-w-[380px] rounded-lg border border-line bg-app/90 px-6 py-6 text-center backdrop-blur-sm">
+              <p className="text-[13px] font-medium text-ink">空白画布</p>
+              <p className="mt-1 text-xs leading-5 text-ink-muted">
+                从底部工具栏添加节点开始。提示词 → ComfyUI 任务 → 生成结果，
+                全部摊在同一张画布上，拖拽即整理。
+              </p>
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void addNode('prompt')}
+                  className="inline-flex h-7 items-center gap-1 rounded-md bg-app-inverse px-2.5 text-xs text-ink-inverse transition-opacity hover:opacity-90"
+                >
+                  <Type className="h-3.5 w-3.5" />
+                  提示词
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void addNode('comfy_run')}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-line px-2.5 text-xs text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                  ComfyUI 任务
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 底部浮动工具栏（参考 Excalidraw / tldraw） */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center">
+          <div className="pointer-events-auto flex items-center gap-0.5 rounded-lg border border-line bg-app/95 px-1 py-1 shadow-float backdrop-blur-sm">
+            {ADD_MENU.map((m) => {
+              const Icon = m.icon;
+              return (
+                <button
+                  key={m.type}
+                  type="button"
+                  title={`添加${m.label}`}
+                  aria-label={`添加${m.label}`}
+                  onClick={() => void addNode(m.type)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink active:bg-app-active"
+                >
+                  <Icon className="h-4 w-4" strokeWidth={1.75} />
+                </button>
+              );
+            })}
+
+            <div className="mx-1 h-5 w-px bg-line" />
+
+            <button
+              type="button"
+              title="适应画布（Ctrl+0）"
+              aria-label="适应画布"
+              onClick={() => fitView({ padding: 0.18, duration: 320 })}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink"
+            >
+              <Maximize2 className="h-4 w-4" strokeWidth={1.75} />
+            </button>
+            <button
+              type="button"
+              title="小地图"
+              aria-label="小地图"
+              onClick={() => setShowMinimap((v) => !v)}
+              className={
+                showMinimap
+                  ? 'flex h-8 w-8 items-center justify-center rounded-md bg-app-active text-ink transition-colors'
+                  : 'flex h-8 w-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink'
+              }
+            >
+              <MapIcon className="h-4 w-4" strokeWidth={1.75} />
+            </button>
+          </div>
+        </div>
+
+        {/* Toast 反馈 */}
+        {toast && (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 animate-slide-up">
+            <div className="max-w-[420px] truncate rounded-md border border-line bg-app px-3 py-1.5 text-xs text-ink shadow-float">
+              {toast}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 底部状态条 */}
       <div className="flex h-7 shrink-0 items-center justify-between border-t border-line bg-app px-3 text-[10px] text-ink-muted">
-        <span>左键框选 · 空格/右键拖拽平移 · 滚轮缩放 · Delete 删除选中</span>
+        <span className="flex items-center gap-2">
+          <span className="flex items-center gap-1">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor: comfyConnected ? 'var(--success)' : 'var(--text-muted)',
+              }}
+            />
+            ComfyUI {comfyConnected ? '已连接' : '未连接'}
+          </span>
+          <span className="text-line-strong">·</span>
+          <span className="hidden sm:inline">
+            框选 · 空格平移 · 滚轮缩放 · Ctrl+D 复制 · Delete 删除
+          </span>
+        </span>
+
         <span className="flex items-center gap-2">
           {rfNodes.filter((n) => n.selected).length > 0 && (
             <button

@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { getCanvasWithNodes } from '@/server/actions/canvas';
+import { defaultComfyHost } from '@/server/settings';
 import { CanvasEditor } from './canvas-editor';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +32,7 @@ export default async function CanvasDetailPage({
       canvas={data.canvas}
       nodes={data.nodes}
       focusId={sp.focus}
+      comfyHost={defaultComfyHost()}
     />
   );
 }
