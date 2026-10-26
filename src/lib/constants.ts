@@ -6,6 +6,7 @@ import {
   CalendarDays,
   CheckSquare,
   Frame,
+  Images,
   LayoutDashboard,
   Lightbulb,
   NotebookPen,
@@ -39,6 +40,7 @@ export const NAV_GROUPS: Array<{ title: string; items: NavItem[] }> = [
     title: '生产',
     items: [
       { href: '/canvas', label: '画布', icon: Frame },
+      { href: '/assets', label: '素材库', icon: Images },
       { href: '/agent', label: 'AI 助手', icon: Sparkles },
     ],
   },
@@ -128,6 +130,9 @@ export const CANVAS_ZOOM = { min: 0.2, max: 2.5 };
 
 /** 全局搜索单类结果上限 */
 export const SEARCH_LIMIT = 20;
+
+/** 素材库拖拽到画布时使用的 MIME（两端共用） */
+export const ASSET_DND_MIME = 'application/x-workbench-asset';
 
 /** 默认 ComfyUI / LM Studio 地址（设置页初始值） */
 export const DEFAULT_COMFY_HOST = 'http://127.0.0.1:8188';

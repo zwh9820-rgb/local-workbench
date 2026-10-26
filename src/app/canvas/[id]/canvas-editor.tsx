@@ -61,7 +61,7 @@ import { Field, Input, Textarea } from '@/components/ui/input';
 import { MarkdownEditor } from '@/components/markdown/markdown-editor';
 import { nodeTypes, type WBNode, type WBNodeData } from '@/components/canvas/node-components';
 import { useComfySocket, type ComfySocketEvent } from '@/components/canvas/use-comfy-socket';
-import { NODE_DEFAULT_SIZE, NODE_TYPE_LABEL } from '@/lib/constants';
+import { NODE_DEFAULT_SIZE, NODE_TYPE_LABEL, ASSET_DND_MIME } from '@/lib/constants';
 import { cn, debounce, uuid } from '@/lib/utils';
 
 /* ------------------------------ 类型转换 -------------------------------- */
@@ -728,10 +728,91 @@ function EditorInner({
     return () => window.removeEventListener('paste', onPaste);
   }, [importMedia, importText, showToast]);
 
-  /** 拖拽文件进画布 */
+  /** 从素材库拖入：直接建节点，不重复上传 */
+  const importAsset = useCallback(
+    async (
+      asset: {
+        url: string;
+        title?: string;
+        width?: number;
+        height?: number;
+        params?: Record<string, unknown>;
+        positivePrompt?: string;
+        kind?: 'image' | 'video';
+      },
+      clientX: number,
+      clientY: number,
+    ) => {
+      const pos = screenToFlowPosition({ x: clientX, y: clientY });
+      const w = 340;
+      const ratio =
+        asset.width && asset.height
+          ? asset.height / asset.width
+          : asset.kind === 'video'
+            ? 0.5625
+            : 0.75;
+      const h = Math.min(520, Math.max(180, Math.round(w * ratio) + 30));
+
+      const row = await createCanvasNode({
+        canvasId: canvas.id,
+        nodeType: 'image',
+        title: asset.title ?? '素材',
+        imagePath: asset.url,
+        positionX: pos.x - w / 2,
+        positionY: pos.y - h / 2,
+        width: w,
+        height: h,
+        zIndex: rfNodes.length,
+        meta: {
+          width: asset.width,
+          height: asset.height,
+          params: asset.params ?? {},
+          positivePrompt: asset.positivePrompt,
+          mediaType: asset.kind === 'video' ? 'video' : 'image',
+          source: 'library',
+        },
+      });
+
+      setRfNodes((prev) => [
+        ...prev,
+        toFlowNode(row, onEdit, onRunComfy, onNodeResizeStable),
+      ]);
+      showToast('已从素材库添加到画布');
+      router.refresh();
+    },
+    [
+      canvas.id,
+      rfNodes.length,
+      screenToFlowPosition,
+      setRfNodes,
+      onEdit,
+      onRunComfy,
+      onNodeResizeStable,
+      showToast,
+      router,
+    ],
+  );
+
+  /** 拖拽进画布：素材库卡片 或 本地文件 */
   const onDropFiles = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+
+      // 1) 从素材库拖来的卡片
+      const raw = e.dataTransfer.getData(ASSET_DND_MIME);
+      if (raw) {
+        try {
+          const asset = JSON.parse(raw) as Parameters<typeof importAsset>[0];
+          void importAsset(asset, e.clientX, e.clientY).catch((err) =>
+            showToast(err instanceof Error ? err.message : '添加失败'),
+          );
+          return;
+        } catch {
+          /* 解析失败则当普通文件处理 */
+        }
+      }
+
+      // 2) 本地文件
       const files = Array.from(e.dataTransfer.files ?? []).filter(
         (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
       );
@@ -747,7 +828,7 @@ function EditorInner({
         }
       })();
     },
-    [importMedia, showToast],
+    [importAsset, importMedia, showToast],
   );
 
   /* ------------------------------ 删除节点 ------------------------------ */

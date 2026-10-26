@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readAsset } from '@/server/assets';
+import { readAsset, removeAsset } from '@/server/assets';
 
 /**
  * 读取本地素材
@@ -29,4 +29,17 @@ export async function GET(
       'Cache-Control': 'public, max-age=31536000, immutable',
     },
   });
+}
+
+/** 删除素材（同时清理索引） */
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ name: string }> },
+) {
+  const { name } = await params;
+  const ok = removeAsset(name);
+  if (!ok) {
+    return NextResponse.json({ error: '素材不存在' }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true });
 }

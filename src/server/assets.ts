@@ -83,6 +83,58 @@ export interface SavedAsset {
   ext: string;
 }
 
+/* ------------------------------ 元数据索引 ------------------------------ */
+/**
+ * 素材的生成信息（尺寸/模型/参数）在上传时解析一次，存进 index.json。
+ * 列表页直接读索引，避免每次打开素材库都去解一遍 PNG。
+ */
+export interface AssetMeta {
+  width?: number;
+  height?: number;
+  title?: string;
+  positivePrompt?: string;
+  negativePrompt?: string;
+  params?: Record<string, unknown>;
+  size: number;
+  createdAt: number;
+}
+
+type AssetIndex = Record<string, AssetMeta>;
+
+function indexPath(): string {
+  return path.join(assetsDir(), 'index.json');
+}
+
+export function readIndex(): AssetIndex {
+  try {
+    const raw = fs.readFileSync(indexPath(), 'utf8');
+    const parsed = JSON.parse(raw) as AssetIndex;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeIndex(idx: AssetIndex): void {
+  try {
+    fs.writeFileSync(indexPath(), JSON.stringify(idx), 'utf8');
+  } catch {
+    /* 索引写失败不影响主流程 */
+  }
+}
+
+export function upsertIndex(filename: string, meta: AssetMeta): void {
+  const idx = readIndex();
+  idx[filename] = meta;
+  writeIndex(idx);
+}
+
+export function removeIndex(filename: string): void {
+  const idx = readIndex();
+  delete idx[filename];
+  writeIndex(idx);
+}
+
 /** 保存素材，返回访问地址 */
 export function saveAsset(buffer: Buffer, mimeOrExt: string): SavedAsset {
   const ext = mimeOrExt.startsWith('.')
@@ -123,27 +175,52 @@ export function removeAsset(name: string): boolean {
   const full = path.join(assetsDir(), name);
   if (!fs.existsSync(full)) return false;
   fs.unlinkSync(full);
+  removeIndex(name);
   return true;
 }
 
-/** 列出素材（按修改时间倒序） */
-export function listAssets(limit = 200): Array<{
+export interface AssetItem {
   filename: string;
   url: string;
   size: number;
   mtime: number;
-}> {
+  ext: string;
+  kind: 'image' | 'video';
+  width?: number;
+  height?: number;
+  title?: string;
+  positivePrompt?: string;
+  params?: Record<string, unknown>;
+}
+
+/** 列出素材（按修改时间倒序，合并索引里的生成信息） */
+export function listAssets(limit = 300): AssetItem[] {
   const dir = assetsDir();
-  const names = fs.readdirSync(dir).filter((n) => isSafeName(n));
+  const index = readIndex();
+
+  const names = fs
+    .readdirSync(dir)
+    .filter((n) => isSafeName(n));
 
   return names
     .map((n) => {
       const st = fs.statSync(path.join(dir, n));
+      const ext = path.extname(n).toLowerCase();
+      const meta = index[n];
       return {
         filename: n,
         url: `/api/assets/${n}`,
         size: st.size,
         mtime: st.mtimeMs,
+        ext,
+        kind: (['.mp4', '.webm', '.mov'].includes(ext) ? 'video' : 'image') as
+          | 'image'
+          | 'video',
+        width: meta?.width,
+        height: meta?.height,
+        title: meta?.title,
+        positivePrompt: meta?.positivePrompt,
+        params: meta?.params,
       };
     })
     .sort((a, b) => b.mtime - a.mtime)

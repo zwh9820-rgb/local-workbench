@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { saveAsset } from '@/server/assets';
+import { saveAsset, upsertIndex } from '@/server/assets';
 import { parsePngComfyMeta, parsePngSize, pickPositivePrompt } from '@/server/comfy/png-meta';
 import { extractParams, isApiFormat, type ComfyWorkflow } from '@/server/comfy/prompt';
 
@@ -71,6 +71,18 @@ export async function POST(req: Request) {
       positivePrompt?.slice(0, 30) ||
       file.name?.replace(/\.[^.]+$/, '').slice(0, 30) ||
       '粘贴的图片';
+
+    // 写入索引，素材库列表直接读，不用再解析
+    upsertIndex(saved.filename, {
+      width,
+      height,
+      title,
+      positivePrompt,
+      negativePrompt,
+      params,
+      size: saved.size,
+      createdAt: Date.now(),
+    });
 
     return NextResponse.json({
       ok: true,
