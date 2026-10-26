@@ -183,13 +183,41 @@ LM Studio：加载 DeepSeek 模型 → 打开 Local Server → 端口 1234 → �
 
 ---
 
-## 七、Tauri v2 迁移提示
+## 七、桌面版（Windows exe）
 
-业务代码已按可迁移方式编写：
+已内置 Tauri v2 外壳，用 **sidecar 方案**打包：
+
+```
+Tauri 窗口 → 内置 node.exe 启动 Next standalone 服务 → 窗口加载 127.0.0.1
+数据库落在 %APPDATA%\com.zwh.aicontentworkbench\workbench.db
+```
+
+- 用户机器**不需要装 Node**（安装包自带 node 运行时）
+- ComfyUI / LM Studio 仍是外部程序，不打包进去
+- 安装包体积约 70–100 MB
+
+打 tag 即可自动出安装包：
+
+```bash
+git tag v2.0.0
+git push origin v2.0.0
+```
+
+GitHub Actions 会在 Windows runner 上编译 Rust 并产出 NSIS 安装包 + 便携 zip，
+详见 [RELEASE.md](./RELEASE.md)。
+
+本地自己构建（需 Rust + VS Build Tools）：
+
+```bash
+npm run build:standalone
+node scripts/prepare-desktop.mjs
+npx tauri build
+```
+
+### 迁移到 Tauri 时已做的兼容处理
 
 - 所有数据读写都在服务端（Server Actions / Route Handlers），无浏览器强依赖 API
-- 数据库路径通过 `DATABASE_URL` 注入，改指 `AppData` 目录即可
-- ComfyUI / LM Studio 均为 `http://127.0.0.1:*` 直连，`next.config.ts` 里的 `/comfy` 代理仅开发期解决跨域
-- 不依赖 `window.localStorage` 存业务数据（只存主题等 UI 偏好）
+- 数据库路径通过 `DATABASE_URL` 注入，桌面版指向 `AppData`
+- 业务数据不存 `localStorage`（只存主题等 UI 偏好）
+- `next.config.ts` 里的 `/comfy` 代理仅开发期解决跨域
 
-打包时把 Next.js 以 Node sidecar 方式随 Tauri 启动，前端窗口加载本地端口即可。
