@@ -1,0 +1,27 @@
+[package]
+name = "ai-content-workbench"
+version = "0.2.0"
+description = "本地 AI 内容生产工作台"
+authors = ["zwh9820-rgb"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# 库名固定，main.rs 通过 app_lib::run() 调用
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

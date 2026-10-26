@@ -1,0 +1,399 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+ * 设计令牌（Design Tokens）
+ * 严格黑白极简：只有灰阶 + 3 个状态色。
+ * 明暗切换 = <html class="dark"> 的增删，由 ThemeProvider / 设置页控制。
+ * ========================================================================== */
+@layer base {
+  :root {
+    /* --- 字体（不依赖外部字体服务，离线可用） --- */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei',
+      'PingFang SC', 'Noto Sans SC', sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', 'Cascadia Code',
+      Consolas, monospace;
+
+    /* --- 背景 --- */
+    --bg: #ffffff;
+    --panel: #f7f7f7;
+    --panel-hover: #efefef;
+    --panel-active: #e8e8e8;
+    /* --- 描边 --- */
+    --border: #e5e5e5;
+    --border-strong: #d4d4d4;
+    /* --- 文字 --- */
+    --text-primary: #111111;
+    --text-secondary: #666666;
+    --text-muted: #999999;
+    /* --- 反色（主按钮） --- */
+    --bg-inverse: #111111;
+    --text-inverse: #ffffff;
+    /* --- 画布 --- */
+    --canvas-bg: #fafafa;
+    --canvas-dot: #dcdcdc;
+    --canvas-selection: rgba(17, 17, 17, 0.08);
+    /* --- 代码块 --- */
+    --code-bg: #f4f4f4;
+    /* --- 状态（唯一允许的彩色） --- */
+    --success: #34a853;
+    --error: #ea4335;
+    --warning: #f59e0b;
+  }
+
+  .dark {
+    --bg: #0f0f0f;
+    --panel: #191919;
+    --panel-hover: #202020;
+    --panel-active: #262626;
+    --border: #2a2a2a;
+    --border-strong: #3a3a3a;
+    --text-primary: #eeeeee;
+    --text-secondary: #999999;
+    --text-muted: #6b6b6b;
+    --bg-inverse: #eeeeee;
+    --text-inverse: #0f0f0f;
+    --canvas-bg: #0b0b0b;
+    --canvas-dot: #232323;
+    --canvas-selection: rgba(238, 238, 238, 0.08);
+    --code-bg: #141414;
+    --success: #34a853;
+    --error: #ea4335;
+    --warning: #f59e0b;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  html {
+    /* 防止明暗切换瞬间白闪 */
+    background-color: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text-primary);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    overscroll-behavior: none;
+  }
+
+  /* 统一焦点环：细描边，不用彩色 */
+  :focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 1px;
+  }
+
+  ::selection {
+    background: var(--text-primary);
+    color: var(--bg);
+  }
+
+  /* --- 细滚动条 --- */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+    background-clip: content-box;
+  }
+
+  /* 去掉 number input 的上下箭头 */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+/* ==========================================================================
+ * 组件级通用类（跨页面复用的原子样式，React 组件内也会用）
+ * ========================================================================== */
+@layer components {
+  /* 基础面板 */
+  .panel {
+    @apply bg-app-panel border border-line rounded-md;
+  }
+
+  /* 主按钮：反色块 */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md
+           bg-app-inverse text-ink-inverse text-[13px] font-medium
+           transition-colors hover:opacity-90 active:opacity-80
+           disabled:opacity-40 disabled:pointer-events-none;
+  }
+
+  /* 次按钮：描边 */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md
+           border border-line bg-transparent text-ink-secondary text-[13px]
+           transition-colors hover:bg-app-hover hover:text-ink
+           disabled:opacity-40 disabled:pointer-events-none;
+  }
+
+  /* 输入框 */
+  .field {
+    @apply w-full h-8 px-2.5 rounded-md bg-app border border-line text-[13px] text-ink
+           placeholder:text-ink-muted transition-colors
+           focus:border-line-strong focus:outline-none;
+  }
+
+  /* 标签 chip */
+  .chip {
+    @apply inline-flex items-center h-5 px-1.5 rounded-sm bg-app-hover
+           text-2xs text-ink-secondary border border-line;
+  }
+
+  /* 1px 分割线 */
+  .hairline {
+    @apply border-t border-line;
+  }
+
+  /* 隐藏滚动条但保留滚动能力（虚拟滚动容器用） */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+ * React Flow（@xyflow/react v12）灰度化覆盖
+ * 目标：节点/连线/控件全部去彩，只保留灰阶与极细描边
+ * ========================================================================== */
+.react-flow {
+  --xy-background-color: var(--canvas-bg);
+  --xy-edge-stroke-default: var(--border-strong);
+  --xy-edge-stroke-selected-default: var(--text-secondary);
+  --xy-connectionline-stroke-default: var(--text-secondary);
+  --xy-attribution-background-color: transparent;
+  background-color: var(--canvas-bg);
+}
+
+.react-flow__node {
+  font-family: inherit;
+}
+
+/* 节点默认无边框、无背景，样式完全由我们的自定义节点组件控制 */
+.react-flow__node-default,
+.react-flow__node-input,
+.react-flow__node-output {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 8px;
+}
+
+/* 选中态：只加一圈实线，不用蓝色 */
+.react-flow__node.selected > .node-shell,
+.react-flow__node:focus-visible > .node-shell {
+  border-color: var(--text-primary);
+}
+
+.react-flow__handle {
+  width: 7px;
+  height: 7px;
+  background: var(--panel);
+  border: 1px solid var(--text-secondary);
+  border-radius: 999px;
+  transition: background 120ms;
+}
+.react-flow__handle:hover {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+/* 连线 */
+.react-flow__edge-path {
+  stroke: var(--border-strong);
+  stroke-width: 1.25;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--text-secondary);
+  stroke-width: 1.75;
+}
+
+/* 框选矩形 */
+.react-flow__selection {
+  background: var(--canvas-selection);
+  border: 1px solid var(--text-secondary);
+}
+
+/* 右下角控件 / 小地图 */
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  width: 26px;
+  height: 26px;
+}
+.react-flow__controls-button:hover {
+  background: var(--panel-hover);
+  color: var(--text-primary);
+}
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__minimap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.react-flow__minimap-mask {
+  fill: var(--canvas-selection);
+}
+
+.react-flow__attribution {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 9px;
+  opacity: 0.5;
+}
+
+/* ==========================================================================
+ * Markdown 编辑器 / 预览器（@uiw）灰度化
+ * 通过 data-color-mode 跟随 html.dark，变量统一走设计令牌
+ * ========================================================================== */
+.w-md-editor {
+  --color-canvas-default: var(--bg);
+  --color-canvas-subtle: var(--panel);
+  --color-border-default: var(--border);
+  --color-fg-default: var(--text-primary);
+  --color-fg-muted: var(--text-secondary);
+  --color-accent-fg: var(--text-primary);
+  --color-accent-emphasis: var(--text-primary);
+  box-shadow: none !important;
+  background-color: var(--bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.w-md-editor-toolbar {
+  background-color: var(--panel) !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 4px 6px !important;
+}
+.w-md-editor-toolbar li > button {
+  color: var(--text-secondary) !important;
+  height: 22px !important;
+  border-radius: 4px;
+}
+.w-md-editor-toolbar li > button:hover {
+  color: var(--text-primary) !important;
+  background-color: var(--panel-hover) !important;
+}
+.w-md-editor-text,
+.w-md-editor-text-pre,
+.w-md-editor-text-input,
+.wmde-markdown {
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+  color: var(--text-primary) !important;
+  background-color: transparent !important;
+}
+.w-md-editor-preview {
+  background-color: var(--bg) !important;
+  box-shadow: inset 1px 0 0 0 var(--border) !important;
+}
+.w-md-editor-bar svg {
+  fill: var(--text-muted);
+}
+
+/* Markdown 预览正文 */
+.wmde-markdown {
+  background: transparent !important;
+  font-family: var(--font-sans) !important;
+}
+.wmde-markdown h1,
+.wmde-markdown h2,
+.wmde-markdown h3,
+.wmde-markdown h4 {
+  border-bottom-color: var(--border) !important;
+  color: var(--text-primary) !important;
+  font-weight: 600;
+}
+.wmde-markdown code {
+  background-color: var(--code-bg) !important;
+  color: var(--text-primary) !important;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+.wmde-markdown pre {
+  background-color: var(--code-bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.wmde-markdown pre code {
+  background: transparent !important;
+  padding: 0;
+}
+.wmde-markdown blockquote {
+  border-left: 2px solid var(--border-strong) !important;
+  color: var(--text-secondary) !important;
+}
+.wmde-markdown table tr {
+  background-color: transparent !important;
+  border-color: var(--border) !important;
+}
+.wmde-markdown table th,
+.wmde-markdown table td {
+  border-color: var(--border) !important;
+}
+.wmde-markdown hr {
+  background-color: var(--border) !important;
+}
+.wmde-markdown a {
+  color: var(--text-primary) !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 代码高亮去彩：语法色统一映射到灰阶（黑白极简约束） */
+.wmde-markdown .token.comment,
+.wmde-markdown .token.prolog,
+.wmde-markdown .token.doctype {
+  color: var(--text-muted) !important;
+}
+.wmde-markdown .token.string,
+.wmde-markdown .token.attr-value,
+.wmde-markdown .token.number,
+.wmde-markdown .token.keyword,
+.wmde-markdown .token.function,
+.wmde-markdown .token.property {
+  color: var(--text-secondary) !important;
+}
+.wmde-markdown .token.punctuation,
+.wmde-markdown .token.operator {
+  color: var(--text-primary) !important;
+}
