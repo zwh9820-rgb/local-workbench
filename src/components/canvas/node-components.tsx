@@ -144,29 +144,82 @@ function ImageBody({ node }: { node: CanvasNode }) {
   if (!node.imagePath) {
     return (
       <div className="flex h-full items-center justify-center text-2xs text-ink-muted">
-        暂无图片
+        暂无素材
       </div>
     );
   }
 
+  const meta = node.meta ?? {};
+  const params = (meta.params ?? {}) as Record<string, unknown>;
+  const isVideo = meta.mediaType === 'video';
+
+  // 生成信息：优先取 params，其次取导入时记录的原始尺寸
+  const width = (params.width as number | undefined) ?? (meta.width as number | undefined);
+  const height = (params.height as number | undefined) ?? (meta.height as number | undefined);
+  const model = params.model as string | undefined;
+  const sampler = params.sampler as string | undefined;
+  const steps = params.steps as number | undefined;
+  const cfg = params.cfg as number | undefined;
+  const seed = params.seed as number | undefined;
+
+  const hasInfo = Boolean(width || model || sampler || steps || cfg || seed);
+
   return (
     <>
       <div className="flex h-full flex-col">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={node.imagePath}
-          alt={node.title}
-          className="nodrag min-h-0 w-full flex-1 cursor-zoom-in rounded-sm object-contain transition-opacity hover:opacity-90"
-          onClick={(e) => {
-            e.stopPropagation();
-            setPreview(true);
-          }}
-        />
-        {node.meta?.positivePrompt && (
-          <p className="mt-1 shrink-0 truncate text-[10px] text-ink-muted">
-            {truncate(String(node.meta.positivePrompt), 80)}
-          </p>
+        {isVideo ? (
+          <video
+            src={node.imagePath}
+            controls
+            className="nodrag min-h-0 w-full flex-1 rounded-sm bg-black object-contain"
+          />
+        ) : (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={node.imagePath}
+            alt={node.title}
+            className="nodrag min-h-0 w-full flex-1 cursor-zoom-in rounded-sm object-contain transition-opacity hover:opacity-90"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPreview(true);
+            }}
+          />
         )}
+
+        {/* 生成信息条 */}
+        {hasInfo && (
+          <div className="mt-1 flex shrink-0 flex-wrap items-center gap-1 text-[10px] leading-4 text-ink-muted">
+            {width && height ? (
+              <span className="rounded-sm border border-line px-1 text-ink-secondary">
+                {width}×{height}
+              </span>
+            ) : null}
+            {model && (
+              <span
+                className="max-w-[150px] truncate rounded-sm border border-line px-1"
+                title={model}
+              >
+                {model.replace(/\.(safetensors|ckpt|pt|gguf)$/i, '')}
+              </span>
+            )}
+            {sampler && (
+              <span className="rounded-sm border border-line px-1">{sampler}</span>
+            )}
+            {steps !== undefined && <span>steps {steps}</span>}
+            {cfg !== undefined && <span>cfg {cfg}</span>}
+            {seed !== undefined && (
+              <span className="truncate" title={`seed ${seed}`}>
+                seed {seed}
+              </span>
+            )}
+          </div>
+        )}
+
+        {meta.positivePrompt ? (
+          <p className="mt-0.5 shrink-0 truncate text-[10px] text-ink-muted">
+            {truncate(String(meta.positivePrompt), 90)}
+          </p>
+        ) : null}
       </div>
 
       {/* 全屏预览 */}
@@ -182,9 +235,18 @@ function ImageBody({ node }: { node: CanvasNode }) {
               alt={node.title}
               className="max-h-full max-w-full object-contain"
             />
-            <span className="absolute bottom-5 text-[11px] text-white/60">
-              点击任意处关闭
-            </span>
+            <div className="absolute bottom-5 max-w-[70vw] text-center">
+              {meta.positivePrompt ? (
+                <p className="mb-1 line-clamp-2 text-[11px] text-white/70">
+                  {String(meta.positivePrompt)}
+                </p>
+              ) : null}
+              <p className="text-[11px] text-white/50">
+                {[width && height ? `${width}×${height}` : '', model, sampler]
+                  .filter(Boolean)
+                  .join(' · ') || '点击任意处关闭'}
+              </p>
+            </div>
           </div>,
           document.body,
         )}
@@ -213,14 +275,25 @@ function ComfyBody({
   onRun?: (id: string) => void;
 }) {
   const hasWorkflow = Boolean(node.meta?.workflowJson);
+  const error = node.meta?.error as string | undefined;
+
   return (
     <div className="flex h-full flex-col">
-      <p className="min-h-0 flex-1 overflow-hidden text-2xs leading-5 text-ink-muted">
-        {hasWorkflow
-          ? truncate(String(node.meta?.promptOverride || node.content || ''), 160) ||
-            '已载入工作流'
-          : '尚未载入工作流'}
-      </p>
+      {status === 'error' && error ? (
+        <p
+          className="min-h-0 flex-1 overflow-hidden text-2xs leading-5 text-[var(--error)]"
+          title={error}
+        >
+          {truncate(error, 160)}
+        </p>
+      ) : (
+        <p className="min-h-0 flex-1 overflow-hidden text-2xs leading-5 text-ink-muted">
+          {hasWorkflow
+            ? truncate(String(node.meta?.promptOverride || node.content || ''), 160) ||
+              '已载入工作流'
+            : '尚未载入工作流'}
+        </p>
+      )}
 
       {(status === 'running' || status === 'queued') && (
         <div className="mt-1.5 shrink-0">

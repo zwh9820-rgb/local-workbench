@@ -176,13 +176,44 @@ export async function collectResult(nodeId: string): Promise<CollectResult> {
   }
   if (images.length === 0) {
     const failed = entry.status?.status_str === 'error';
+
+    // 从 ComfyUI 的 status.messages 里挖出真正的报错
+    let errorDetail = '';
+    if (failed) {
+      for (const m of entry.status?.messages ?? []) {
+        if (!Array.isArray(m)) continue;
+        if (m[0] === 'execution_error') {
+          const d = m[1] as {
+            node_id?: string;
+            node_type?: string;
+            exception_message?: string;
+            exception_type?: string;
+          };
+          const parts = [
+            d.node_type ? `${d.node_type}` : '',
+            d.node_id ? `#${d.node_id}` : '',
+          ].filter(Boolean);
+          errorDetail =
+            `${parts.length ? `${parts.join(' ')}: ` : ''}` +
+            (d.exception_message || d.exception_type || '未知错误');
+          break;
+        }
+        if (m[0] === 'execution_interrupted') {
+          errorDetail = '任务被中断';
+          break;
+        }
+      }
+    }
+
     db.update(canvasNode)
       .set({
         meta: {
           ...meta,
           status: failed ? 'error' : 'done',
           progress: failed ? (meta.progress ?? 0) : 100,
-          error: failed ? 'ComfyUI 执行失败' : undefined,
+          error: failed
+            ? errorDetail || 'ComfyUI 执行失败（未返回错误详情，请到 ComfyUI 控制台查看）'
+            : undefined,
           finishedAt: Date.now(),
         },
         updatedAt: new Date(),
@@ -193,7 +224,7 @@ export async function collectResult(nodeId: string): Promise<CollectResult> {
       status: failed ? 'error' : 'done',
       images: 0,
       imageNodeIds: [],
-      message: failed ? '任务执行失败' : '任务完成但没有图片输出',
+      message: failed ? errorDetail || '任务执行失败' : '任务完成但没有图片输出',
     };
   }
 

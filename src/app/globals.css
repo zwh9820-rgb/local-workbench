@@ -212,28 +212,42 @@
   border-color: var(--text-primary);
 }
 
+/* 连线锚点：加大到 10px 并增强 hover 反馈，避免"点不中" */
 .react-flow__handle {
-  width: 7px;
-  height: 7px;
+  width: 10px;
+  height: 10px;
   background: var(--panel);
-  border: 1px solid var(--text-secondary);
+  border: 1.5px solid var(--text-secondary);
   border-radius: 999px;
-  transition: background 120ms;
+  transition:
+    background 120ms,
+    border-color 120ms,
+    box-shadow 120ms;
+  z-index: 10;
 }
 .react-flow__handle:hover {
   background: var(--text-primary);
   border-color: var(--text-primary);
+  box-shadow: 0 0 0 4px var(--canvas-selection);
 }
 
 /* 连线 */
 .react-flow__edge-path {
   stroke: var(--border-strong);
-  stroke-width: 1.25;
+  stroke-width: 1.6;
+  transition: stroke 120ms;
 }
-.react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--text-secondary);
-  stroke-width: 1.75;
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--text-primary);
+  stroke-width: 2.2;
+}
+
+/* 拖拽连线时的引导线 */
+.react-flow__connection-path {
+  stroke: var(--text-primary);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
 }
 
 /* 框选矩形 */

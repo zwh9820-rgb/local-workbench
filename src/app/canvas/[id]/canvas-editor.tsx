@@ -6,6 +6,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MarkerType,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
@@ -27,6 +28,7 @@ import {
   Copy,
   FileText,
   Frame,
+  ImagePlus,
   LayoutTemplate,
   Map as MapIcon,
   Maximize2,
@@ -150,6 +152,7 @@ function EditorInner({
   const [isTemplate, setIsTemplate] = useState(canvas.isTemplate);
   const [toast, setToast] = useState<string | null>(null);
   const [showMinimap, setShowMinimap] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -506,11 +509,245 @@ function EditorInner({
         meta,
       });
 
-      setRfNodes((prev) => [...prev, toFlowNode(row, onEdit)]);
+      // 注意：必须带上 onRunComfy / onNodeResizeStable，否则新节点点「运行」没反应
+      setRfNodes((prev) => [
+        ...prev,
+        toFlowNode(row, onEdit, onRunComfy, onNodeResizeStable),
+      ]);
       setAddOpen(false);
       flashSaved();
     },
-    [canvas.id, rfNodes.length, screenToFlowPosition, setRfNodes, onEdit, flashSaved],
+    [
+      canvas.id,
+      rfNodes.length,
+      screenToFlowPosition,
+      setRfNodes,
+      onEdit,
+      onRunComfy,
+      onNodeResizeStable,
+      flashSaved,
+    ],
+  );
+
+  /* ---------------------- 粘贴 / 拖拽导入（核心入口） ---------------------- */
+
+  /** 视口中心对应的画布坐标 */
+  const getViewportCenter = useCallback(() => {
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    return screenToFlowPosition({
+      x: (rect?.left ?? 0) + (rect?.width ?? 800) / 2,
+      y: (rect?.top ?? 0) + (rect?.height ?? 600) / 2,
+    });
+  }, [screenToFlowPosition]);
+
+  /** 上传图片/视频并生成节点（粘贴、拖拽、选择文件共用） */
+  const importMedia = useCallback(
+    async (file: File | Blob, fallbackName = 'pasted.png') => {
+      const fd = new FormData();
+      fd.append('file', file, (file as File).name || fallbackName);
+
+      const res = await fetch('/api/assets/upload', { method: 'POST', body: fd });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        url?: string;
+        filename?: string;
+        title?: string;
+        width?: number;
+        height?: number;
+        positivePrompt?: string;
+        negativePrompt?: string;
+        params?: Record<string, unknown>;
+        workflow?: unknown;
+        hasWorkflow?: boolean;
+        ext?: string;
+        error?: string;
+      };
+
+      if (!res.ok || !data.url) throw new Error(data.error ?? '导入失败');
+
+      const isVideo = ['.mp4', '.webm', '.mov'].includes(data.ext ?? '');
+
+      // 按原始比例算节点尺寸，限制在合理范围
+      const baseW = 340;
+      const ratio =
+        data.width && data.height ? data.height / data.width : isVideo ? 0.5625 : 0.75;
+      const w = baseW;
+      const h = Math.min(520, Math.max(180, Math.round(w * ratio) + 30));
+
+      const center = getViewportCenter();
+
+      const row = await createCanvasNode({
+        canvasId: canvas.id,
+        nodeType: 'image',
+        title: data.title ?? '粘贴的素材',
+        imagePath: data.url,
+        positionX: center.x - w / 2 + (rfNodes.length % 5) * 24,
+        positionY: center.y - h / 2 + (rfNodes.length % 5) * 24,
+        width: w,
+        height: h,
+        zIndex: rfNodes.length,
+        meta: {
+          filename: data.filename,
+          positivePrompt: data.positivePrompt,
+          negativePrompt: data.negativePrompt,
+          params: data.params ?? {},
+          workflow: data.workflow,
+          mediaType: isVideo ? 'video' : 'image',
+          source: 'paste',
+        },
+      });
+
+      setRfNodes((prev) => [
+        ...prev,
+        toFlowNode(row, onEdit, onRunComfy, onNodeResizeStable),
+      ]);
+      showToast(
+        data.hasWorkflow
+          ? '已导入（含工作流与生成参数）'
+          : '已导入素材',
+      );
+      router.refresh();
+      return row;
+    },
+    [
+      canvas.id,
+      rfNodes.length,
+      getViewportCenter,
+      setRfNodes,
+      onEdit,
+      onRunComfy,
+      onNodeResizeStable,
+      showToast,
+      router,
+    ],
+  );
+
+  /** 粘贴文本：工作流 JSON → comfy_run 节点；其余 → 便签 */
+  const importText = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      let workflowJson: Record<string, unknown> | null = null;
+      if (trimmed.startsWith('{') && trimmed.length > 40) {
+        try {
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          const values = Object.values(parsed);
+          const looksLikeApi =
+            values.length > 0 &&
+            values.every(
+              (v) =>
+                v !== null &&
+                typeof v === 'object' &&
+                typeof (v as { class_type?: unknown }).class_type === 'string',
+            );
+          if (looksLikeApi) workflowJson = parsed;
+        } catch {
+          /* 不是 JSON，当普通文本 */
+        }
+      }
+
+      const type: NodeType = workflowJson ? 'comfy_run' : 'note';
+      const size = NODE_DEFAULT_SIZE[type];
+      const center = getViewportCenter();
+
+      const row = await createCanvasNode({
+        canvasId: canvas.id,
+        nodeType: type,
+        title: workflowJson ? '粘贴的工作流' : '粘贴的文本',
+        content: workflowJson ? '' : trimmed.slice(0, 100_000),
+        positionX: center.x - size.width / 2,
+        positionY: center.y - size.height / 2,
+        width: size.width,
+        height: size.height,
+        zIndex: rfNodes.length,
+        meta: workflowJson
+          ? { status: 'idle', progress: 0, workflowJson }
+          : {},
+      });
+
+      setRfNodes((prev) => [
+        ...prev,
+        toFlowNode(row, onEdit, onRunComfy, onNodeResizeStable),
+      ]);
+      showToast(workflowJson ? '已粘贴工作流（API 格式）' : '已粘贴文本');
+      router.refresh();
+    },
+    [
+      canvas.id,
+      rfNodes.length,
+      getViewportCenter,
+      setRfNodes,
+      onEdit,
+      onRunComfy,
+      onNodeResizeStable,
+      showToast,
+      router,
+    ],
+  );
+
+  // 全局粘贴监听：图片优先，其次文本；输入框内不拦截
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (items) {
+        for (const item of Array.from(items)) {
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) {
+              e.preventDefault();
+              void importMedia(file).catch((err) =>
+                showToast(err instanceof Error ? err.message : '导入失败'),
+              );
+              return;
+            }
+          }
+        }
+      }
+
+      const text = e.clipboardData?.getData('text/plain');
+      if (text?.trim()) {
+        e.preventDefault();
+        void importText(text).catch((err) =>
+          showToast(err instanceof Error ? err.message : '粘贴失败'),
+        );
+      }
+    };
+
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [importMedia, importText, showToast]);
+
+  /** 拖拽文件进画布 */
+  const onDropFiles = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer.files ?? []).filter(
+        (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
+      );
+      if (files.length === 0) return;
+
+      void (async () => {
+        for (const f of files) {
+          try {
+            await importMedia(f, f.name);
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : '导入失败');
+          }
+        }
+      })();
+    },
+    [importMedia, showToast],
   );
 
   /* ------------------------------ 删除节点 ------------------------------ */
@@ -715,7 +952,17 @@ function EditorInner({
       </div>
 
       {/* 画布 */}
-      <div ref={wrapperRef} className="relative min-h-0 flex-1">
+      <div
+        ref={wrapperRef}
+        className="relative min-h-0 flex-1"
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }
+        }}
+        onDrop={onDropFiles}
+      >
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -736,6 +983,15 @@ function EditorInner({
           }}
           onPaneClick={() => setContextMenu(null)}
           defaultViewport={canvas.viewState}
+          defaultEdgeOptions={{
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              width: 16,
+              height: 16,
+              color: 'var(--border-strong)',
+            },
+          }}
+          connectionLineStyle={{ stroke: 'var(--text-primary)', strokeWidth: 2 }}
           minZoom={0.2}
           maxZoom={2.5}
           selectionOnDrag
@@ -769,20 +1025,33 @@ function EditorInner({
         {/* 空画布引导 */}
         {rfNodes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="pointer-events-auto max-w-[380px] rounded-lg border border-line bg-app/90 px-6 py-6 text-center backdrop-blur-sm">
+            <div className="pointer-events-auto max-w-[420px] rounded-lg border border-line bg-app/90 px-6 py-6 text-center backdrop-blur-sm">
               <p className="text-[13px] font-medium text-ink">空白画布</p>
-              <p className="mt-1 text-xs leading-5 text-ink-muted">
-                从底部工具栏添加节点开始。提示词 → ComfyUI 任务 → 生成结果，
-                全部摊在同一张画布上，拖拽即整理。
+              <p className="mt-1.5 text-xs leading-5 text-ink-muted">
+                把 AI 生成的图片、提示词、工作流
+                <span className="mx-1 rounded-sm border border-line px-1 py-0.5 text-[10px] text-ink-secondary">
+                  Ctrl+V
+                </span>
+                粘贴进来，或直接拖文件到画布上。
+                <br />
+                会自动读取分辨率、模型、采样参数。
               </p>
               <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => void addNode('prompt')}
+                  onClick={() => fileInputRef.current?.click()}
                   className="inline-flex h-7 items-center gap-1 rounded-md bg-app-inverse px-2.5 text-xs text-ink-inverse transition-opacity hover:opacity-90"
                 >
+                  <ImagePlus className="h-3.5 w-3.5" />
+                  选择图片
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void addNode('prompt')}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-line px-2.5 text-xs text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink"
+                >
                   <Type className="h-3.5 w-3.5" />
-                  提示词
+                  新建提示词
                 </button>
                 <button
                   type="button"
@@ -820,6 +1089,16 @@ function EditorInner({
 
             <button
               type="button"
+              title="导入图片 / 视频（也可以直接 Ctrl+V 粘贴或拖进来）"
+              aria-label="导入素材"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-app-hover hover:text-ink"
+            >
+              <ImagePlus className="h-4 w-4" strokeWidth={1.75} />
+            </button>
+
+            <button
+              type="button"
               title="适应画布（Ctrl+0）"
               aria-label="适应画布"
               onClick={() => fitView({ padding: 0.18, duration: 320 })}
@@ -851,6 +1130,28 @@ function EditorInner({
             </div>
           </div>
         )}
+
+        {/* 隐藏的文件选择器 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            void (async () => {
+              for (const f of files) {
+                try {
+                  await importMedia(f, f.name);
+                } catch (err) {
+                  showToast(err instanceof Error ? err.message : '导入失败');
+                }
+              }
+            })();
+          }}
+        />
       </div>
 
       {/* 底部状态条 */}

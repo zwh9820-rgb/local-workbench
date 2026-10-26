@@ -118,8 +118,7 @@ export function parsePngComfyMeta(buf: Buffer): PngComfyMeta {
   };
 }
 
-/** 从 API 格式工作流里取正向提示词（兜底用） */
-export function pickPositivePrompt(promptJson: unknown): string | undefined {
+/** 从 API 格式工作流里取正向提示词（兜底用） */export function pickPositivePrompt(promptJson: unknown): string | undefined {
   if (!promptJson || typeof promptJson !== 'object') return undefined;
   const wf = promptJson as Record<string, { class_type?: string; inputs?: Record<string, unknown> }>;
 
@@ -143,4 +142,16 @@ export function pickPositivePrompt(promptJson: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+/** 从 PNG 的 IHDR 读取宽高（粘贴导入时展示分辨率） */
+export function parsePngSize(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 24) return null;
+  if (buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+  if (buf.toString('ascii', 12, 16) !== 'IHDR') return null;
+  try {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
 }
