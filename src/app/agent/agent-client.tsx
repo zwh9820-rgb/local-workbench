@@ -34,6 +34,31 @@ interface ToolLogItem {
   createdAt: Date | string;
 }
 
+/** SSE 帧类型（与 src/server/agent/run.ts 的 AgentStreamEvent 对应） */
+type StreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool_start'; name: string; label: string }
+  | {
+      type: 'tool_end';
+      name: string;
+      label: string;
+      status: 'success' | 'error';
+      durationMs: number;
+      error?: string;
+    }
+  | {
+      type: 'done';
+      sessionId: string;
+      title: string;
+      messages: AgentMessage[];
+      toolLogs: ToolLogItem[];
+      steps: number;
+      toolsEnabled: boolean;
+    }
+  | { type: 'error'; message: string };
+
+type DoneEvent = Extract<StreamEvent, { type: 'done' }>;
+
 const SUGGESTIONS = [
   '今天有哪些待办没做完？',
   '帮我把最近的灵感按状态梳理一下',
@@ -63,13 +88,17 @@ export function AgentClient({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  /** 流式增量文本（正在生成的那条 assistant 消息） */
+  const [streamText, setStreamText] = useState('');
+  /** 当前正在执行的工具中文名 */
+  const [activeTool, setActiveTool] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, loading]);
+  }, [messages.length, loading, streamText]);
 
-  /* ------------------------------ 发送消息 ------------------------------ */
+  /* --------------------------- 发送消息（SSE 流式） --------------------------- */
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim();
@@ -78,10 +107,12 @@ export function AgentClient({
     setInput('');
     setError(null);
     setLoading(true);
+    setStreamText('');
+    setActiveTool(null);
 
     // 乐观追加用户消息
     const optimistic: AgentMessage = {
-      id: `tmp-${Date.now()}`,
+      id: `tmp-user-${Date.now()}`,
       role: 'user',
       content,
       createdAt: Date.now(),
@@ -94,40 +125,86 @@ export function AgentClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: activeId, text: content }),
       });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        sessionId?: string;
-        title?: string;
-        messages?: AgentMessage[];
-        toolLogs?: ToolLogItem[];
-        error?: string;
-      };
 
-      if (!res.ok || !data.messages) {
-        throw new Error(data.error ?? '对话失败');
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `请求失败（${res.status}）`);
       }
 
-      setMessages(data.messages);
-      setActiveId(data.sessionId ?? null);
-      setTitle(data.title ?? '会话');
-      if (data.toolLogs?.length) {
-        setLogs((prev) => [...prev, ...data.toolLogs!]);
-        setShowLogs(true);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let acc = '';
+      let doneEvent: DoneEvent | null = null;
+
+      // 逐帧解析 SSE
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const line = frame.trim();
+          if (!line.startsWith('data:')) continue;
+
+          let evt: StreamEvent;
+          try {
+            evt = JSON.parse(line.slice(5).trim()) as StreamEvent;
+          } catch {
+            continue;
+          }
+
+          if (evt.type === 'delta') {
+            acc += evt.text;
+            setStreamText(acc);
+          } else if (evt.type === 'tool_start') {
+            setActiveTool(evt.label);
+          } else if (evt.type === 'tool_end') {
+            setActiveTool(null);
+            setLogs((prev) => [
+              ...prev,
+              {
+                id: `tmp-log-${Date.now()}-${evt.name}`,
+                toolName: evt.name,
+                status: evt.status,
+                durationMs: evt.durationMs,
+                error: evt.error ?? null,
+                createdAt: new Date(),
+              },
+            ]);
+            setShowLogs(true);
+          } else if (evt.type === 'done') {
+            doneEvent = evt;
+          } else if (evt.type === 'error') {
+            throw new Error(evt.message);
+          }
+        }
       }
 
-      // 刷新会话列表排序
-      setSessions((prev) => {
-        const rest = prev.filter((s) => s.id !== data.sessionId);
-        return [
-          {
-            id: data.sessionId!,
-            title: data.title ?? '会话',
-            messageCount: data.messages!.length,
-            updatedAt: new Date(),
-          },
-          ...rest,
-        ];
-      });
+      const result = doneEvent;
+      if (!result) throw new Error('连接中断，未收到完整结果');
+
+      setMessages(result.messages);
+      setActiveId(result.sessionId);
+      setTitle(result.title);
+      setStreamText('');
+      // 用服务端真实日志替换临时占位
+      setLogs((prev) => [
+        ...prev.filter((l) => !l.id.startsWith('tmp-log-')),
+        ...result.toolLogs,
+      ]);
+      setSessions((prev) => [
+        {
+          id: result.sessionId,
+          title: result.title,
+          messageCount: result.messages.length,
+          updatedAt: new Date(),
+        },
+        ...prev.filter((s) => s.id !== result.sessionId),
+      ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '对话失败';
       setError(
@@ -138,8 +215,10 @@ export function AgentClient({
       // 回滚乐观消息
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setInput(content);
+      setStreamText('');
     } finally {
       setLoading(false);
+      setActiveTool(null);
     }
   };
 
@@ -343,10 +422,26 @@ export function AgentClient({
                 </div>
               ))}
 
+              {/* 流式输出：边生成边渲染 */}
               {loading && (
-                <div className="flex items-center gap-2 text-xs text-ink-muted">
-                  <Spinner />
-                  正在思考…
+                <div className="flex justify-start">
+                  <div className="max-w-full flex-1">
+                    {streamText ? (
+                      <MarkdownView source={streamText} />
+                    ) : (
+                      <div className="flex items-center gap-2 text-xs text-ink-muted">
+                        <Spinner />
+                        {activeTool ? `正在调用「${activeTool}」…` : '正在思考…'}
+                      </div>
+                    )}
+
+                    {streamText && (
+                      <div className="mt-1.5 flex items-center gap-1.5 text-2xs text-ink-muted">
+                        <span className="inline-block h-1.5 w-1.5 animate-progress-pulse rounded-full bg-ink-muted" />
+                        {activeTool ? `调用「${activeTool}」…` : '生成中'}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
